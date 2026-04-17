@@ -214,20 +214,20 @@ def generate_response(user_text: str) -> str:
     import json, local_voice, main
 
     reply_accum = ""
-    current_phrase = ""
+    sentence_buffer = ""
     word_count = 0
     in_execute_block = False
     action_block = ""
     
     if hasattr(main, "ui") and main.ui: main.ui.set_state("TALKING")
 
-    def _yield_phrase():
-        """Send the current phrase to the voice engine."""
-        nonlocal current_phrase, word_count
-        phrase = current_phrase.strip()
+    def _flush_buffer():
+        """Send the buffered sentence to the voice engine."""
+        nonlocal sentence_buffer, word_count
+        phrase = sentence_buffer.strip()
         if phrase:
             local_voice.speak(phrase)
-        current_phrase = ""
+        sentence_buffer = ""
         word_count = 0
 
     for line in resp.iter_lines():
@@ -259,17 +259,19 @@ def generate_response(user_text: str) -> str:
         if hasattr(main, "ui") and main.ui:
             main.ui.set_subtitle_text(reply_accum.replace("<EXECUTE>","").replace("</EXECUTE>",""))
 
-        # Word-by-word accumulation with hybrid yield
-        current_phrase += chunk
+        # Accumulate into sentence buffer
+        sentence_buffer += chunk
         word_count += len(chunk.split())
 
-        # Yield on punctuation boundary OR every 8 words (whichever first)
-        has_punctuation = any(p in chunk for p in [".", "?", "!", ",", "\n"])
-        if has_punctuation or word_count >= 8:
-            _yield_phrase()
+        # Yield on SENTENCE-ENDING punctuation or ellipsis or double newline
+        is_sentence_end = any(p in chunk for p in [".", "?", "!", "\n\n"])
+        is_ellipsis = "..." in sentence_buffer
+
+        if is_sentence_end or is_ellipsis or word_count >= 15:
+            _flush_buffer()
 
     # Flush any remaining text
-    _yield_phrase()
+    _flush_buffer()
 
     reply = _EXECUTE_PATTERN.sub("", reply_accum).strip()
     if not reply:
