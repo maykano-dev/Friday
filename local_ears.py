@@ -1,16 +1,29 @@
+"""Friday Ears — Continuous background listener with Silero VAD + Groq Whisper.
+
+Architecture:
+  ContinuousListener runs on a daemon thread. It never stops monitoring the mic.
+  When VAD detects human speech:
+    1. If Friday is currently talking → fires interrupt() kill-switch instantly.
+    2. Records until 1.2s of silence, then checks the hallucination guard.
+    3. If audio < 0.6s of actual speech → discards (hallucination/noise).
+    4. Otherwise → ships the .wav to Groq Whisper API and pushes the
+       transcribed text into a result_queue for main.py to consume.
+"""
+
 import pyaudio
 import torch
 import numpy as np
 import time
 import wave
 import os
+import threading
 import requests
+from queue import Queue
+
 import state
 import local_voice
 
-print("[System: Booting audio cortex (Silero VAD + Groq Whisper API)...]")
-
-# Auto-load .env so the key persists across terminal sessions.
+# ── .env Auto-loader ────────────────────────────────────────────────────────
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 if os.path.exists(_env_path):
     with open(_env_path) as _f:
@@ -22,126 +35,185 @@ if os.path.exists(_env_path):
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
+# ── VAD Lazy Loader ─────────────────────────────────────────────────────────
 _vad_model = None
-_utils = None
 
-def _get_vad_model():
-    global _vad_model, _utils
+def _get_vad():
+    global _vad_model
     if _vad_model is None:
-        try:
-            val_model, utils_set = torch.hub.load(repo_or_dir='snakers4/silero-vad', model='silero_vad', trust_repo=True)
-            _vad_model = val_model
-            _utils = utils_set
-        except Exception as e:
-            print(f"[System Error: PyTorch VAD Load Failed: {e}]")
-            raise e
-    return _vad_model, _utils
+        _vad_model, _ = torch.hub.load(
+            repo_or_dir='snakers4/silero-vad',
+            model='silero_vad',
+            trust_repo=True,
+        )
+    return _vad_model
 
-def get_target_input_index(p: pyaudio.PyAudio) -> int|None:
-    target_index = None
-    for i in range(p.get_device_count()):
-        info = p.get_device_info_by_index(i)
+
+def _get_mic_index(pa: pyaudio.PyAudio) -> int | None:
+    for i in range(pa.get_device_count()):
+        info = pa.get_device_info_by_index(i)
         if info['maxInputChannels'] > 0:
             name = info.get('name', '')
-            if "Stereo Mix" in name or "Virtual" in name or "ManyCam" in name:
+            if any(skip in name for skip in ("Stereo Mix", "Virtual", "ManyCam")):
                 continue
-            if "Array" in name or "Realtek" in name or "Built-in" in name:
-                target_index = i
-                break
-    return target_index
+            if any(hw in name for hw in ("Array", "Realtek", "Built-in")):
+                return i
+    return None
 
-def listen_and_transcribe() -> str:
-    p = pyaudio.PyAudio()
-    target_index = get_target_input_index(p)
-    
+
+def _transcribe_wav(wav_path: str) -> str:
+    """Send a .wav to Groq Whisper API and return the transcribed text."""
+    if not GROQ_API_KEY:
+        print("[Ear] GROQ_API_KEY missing — cannot transcribe.")
+        return ""
+    try:
+        with open(wav_path, "rb") as f:
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/audio/transcriptions",
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
+                files={"file": ("audio.wav", f, "audio/wav")},
+                data={"model": "whisper-large-v3"},
+                timeout=15,
+            )
+        if resp.status_code == 200:
+            return resp.json().get("text", "").strip()
+        else:
+            print(f"[Ear] Groq API error {resp.status_code}: {resp.text[:200]}")
+            return ""
+    except Exception as e:
+        print(f"[Ear] transcription error: {e}")
+        return ""
+
+
+class ContinuousListener:
+    """Always-on VAD listener that runs on a background daemon thread.
+
+    Transcribed utterances are pushed into `self.result_queue`.
+    """
+
     CHUNK = 512
     FORMAT = pyaudio.paInt16
     CHANNELS = 1
     RATE = 16000
-    
-    stream = p.open(format=FORMAT, channels=CHANNELS, rate=RATE, 
-                    input=True, input_device_index=target_index, 
-                    frames_per_buffer=CHUNK)
-                    
-    frames = []
-    has_started = False
-    speech_duration = 0.0
-    silence_duration = 0.0
-    vocalizing_accum = 0.0
-    
-    print("Friday is listening...")
-    
-    try:
-        while True:
-            try:
-                data = stream.read(CHUNK, exception_on_overflow=False)
-            except Exception:
-                break
-                
-            audio_int16 = np.frombuffer(data, dtype=np.int16)
-            # Silero expects float32
-            audio_float32 = audio_int16.astype(np.float32) / 32768.0
-            tensor = torch.from_numpy(audio_float32)
-            
-            v_model, _ = _get_vad_model()
-            confidence = v_model(tensor, RATE).item()
-            
-            if confidence > 0.6:
-                vocalizing_accum += (CHUNK / RATE)
-                if vocalizing_accum >= 0.2:  # Cooling down pop filter!
-                    if not has_started:
-                        has_started = True
-                        print("[System: Audio detected! Transcribing...]")
-                        if getattr(state.is_talking, 'value', False):
-                            local_voice.interrupt()
-                    speech_duration += (CHUNK / RATE)
-                    silence_duration = 0.0
-                    frames.append(data)
-            else:
-                if has_started:
-                    frames.append(data)
-                    silence_duration += (CHUNK / RATE)
-                    if silence_duration > 1.2:
-                        break
+    SILENCE_TIMEOUT = 1.2       # seconds of silence to end an utterance
+    PRE_BUFFER = 0.2            # ignore first 0.2s (pop filter)
+    MIN_SPEECH_DURATION = 0.6   # hallucination guard — discard short noise
+    VAD_THRESHOLD = 0.6
+
+    def __init__(self):
+        self.result_queue: Queue = Queue()
+        self._thread: threading.Thread | None = None
+        self._running = False
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._running = True
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        print("[Ear] Continuous listener started.")
+
+    def stop(self) -> None:
+        self._running = False
+
+    def _loop(self) -> None:
+        """Infinite listen → detect → record → transcribe cycle."""
+        pa = pyaudio.PyAudio()
+        mic_idx = _get_mic_index(pa)
+
+        stream = pa.open(
+            format=self.FORMAT, channels=self.CHANNELS,
+            rate=self.RATE, input=True,
+            input_device_index=mic_idx,
+            frames_per_buffer=self.CHUNK,
+        )
+
+        vad = _get_vad()
+        print("Friday is listening...")
+
+        while self._running:
+            frames = []
+            has_started = False
+            speech_duration = 0.0
+            silence_duration = 0.0
+            vocalizing_accum = 0.0
+
+            # ── Inner loop: one utterance ──
+            while self._running:
+                try:
+                    data = stream.read(self.CHUNK, exception_on_overflow=False)
+                except Exception:
+                    break
+
+                pcm = np.frombuffer(data, dtype=np.int16)
+                tensor = torch.from_numpy(pcm.astype(np.float32) / 32768.0)
+                confidence = vad(tensor, self.RATE).item()
+
+                if confidence > self.VAD_THRESHOLD:
+                    vocalizing_accum += self.CHUNK / self.RATE
+
+                    if vocalizing_accum >= self.PRE_BUFFER:
+                        if not has_started:
+                            has_started = True
+                            # ── KILL-SWITCH: interrupt Friday if she's talking ──
+                            if getattr(state.is_talking, 'value', False):
+                                local_voice.interrupt()
+                                print("[Ear] Interrupted Friday — user is speaking.")
+
+                        speech_duration += self.CHUNK / self.RATE
+                        silence_duration = 0.0
+                        frames.append(data)
                 else:
-                    vocalizing_accum = 0.0 # reset pop filter
-                    
-    except KeyboardInterrupt: pass
+                    if has_started:
+                        frames.append(data)
+                        silence_duration += self.CHUNK / self.RATE
+                        if silence_duration > self.SILENCE_TIMEOUT:
+                            break  # end of utterance
+                    else:
+                        vocalizing_accum = 0.0  # reset pop filter
 
-    stream.stop_stream()
-    stream.close()
-    p.terminate()
+            # ── Hallucination guard ──
+            if not frames or speech_duration < self.MIN_SPEECH_DURATION:
+                continue
 
-    if not frames:
-        return ""
-        
-    wf = wave.open("temp_audio.wav", 'wb')
-    wf.setnchannels(CHANNELS)
-    wf.setsampwidth(p.get_sample_size(FORMAT))
-    wf.setframerate(RATE)
-    wf.writeframes(b''.join(frames))
-    wf.close()
+            # ── Save WAV and transcribe ──
+            wav_path = os.path.join(_TTS_DIR, "_ear_temp.wav")
+            try:
+                wf = wave.open(wav_path, 'wb')
+                wf.setnchannels(self.CHANNELS)
+                wf.setsampwidth(pa.get_sample_size(self.FORMAT))
+                wf.setframerate(self.RATE)
+                wf.writeframes(b''.join(frames))
+                wf.close()
+            except Exception as e:
+                print(f"[Ear] WAV write error: {e}")
+                continue
 
-    try:
-        if not GROQ_API_KEY:
-            print("[System WARNING: GROQ_API_KEY missing! You must set it in environment arrays. Aborting Groq STT.]")
-            return ""
-            
-        with open("temp_audio.wav", "rb") as f:
-            files = { "file": ("temp_audio.wav", f, "audio/wav") }
-            data = { "model": "whisper-large-v3" }
-            headers = { "Authorization": f"Bearer {GROQ_API_KEY}" }
-            resp = requests.post("https://api.groq.com/openai/v1/audio/transcriptions", headers=headers, files=files, data=data)
-            
-        if resp.status_code == 200:
-            text = resp.json().get("text", "").strip()
-        else:
-            print(f"[Groq API Error]: {resp.text}")
-            text = ""
-            
-        if os.path.exists("temp_audio.wav"):
-            os.remove("temp_audio.wav")
-        return text
-    except Exception as e:
-        print(f"[Hardware/Cloud Error]: {e}")
-        return ""
+            text = _transcribe_wav(wav_path)
+
+            try:
+                os.remove(wav_path)
+            except OSError:
+                pass
+
+            if text:
+                print(f"\nYou: {text}")
+                self.result_queue.put(text)
+
+        stream.stop_stream()
+        stream.close()
+        pa.terminate()
+
+
+# Module-level convenience path
+_TTS_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Legacy compatibility — old code that calls local_ears.listen_and_transcribe()
+# will still work, but the preferred interface is ContinuousListener.
+_singleton = None
+
+def get_listener() -> ContinuousListener:
+    global _singleton
+    if _singleton is None:
+        _singleton = ContinuousListener()
+    return _singleton

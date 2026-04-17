@@ -1,19 +1,29 @@
-import time
-from datetime import datetime
-from queue import Empty, Queue
+"""Friday — Main event loop.
 
-import local_ears
+Architecture:
+  - ContinuousListener (daemon) handles the mic on its own thread.
+  - VoiceEngine (daemon) handles TTS rendering + playback on two threads.
+  - The main loop here only:
+      1. Polls the listener's result_queue for transcribed text.
+      2. Dispatches to friday_core for streaming LLM response.
+      3. Sleeps 10ms per tick to keep CPU usage minimal.
+"""
+
+import time
+import threading
+from datetime import datetime
+from queue import Empty
+
 import friday_core
 import local_voice
-import action_engine
-from learning_engine import LearningEngine
+import local_ears
 from ui_engine import NeuralVisualizer
 from proactive_engine import ProactiveEngine
 
 ui = None
 
-def get_greeting():
-    """Generates a zero-latency, time-aware startup greeting."""
+
+def get_greeting() -> str:
     hour = datetime.now().hour
     if hour < 12:
         return "Good morning, sir. All systems are online."
@@ -22,81 +32,104 @@ def get_greeting():
     else:
         return "Good evening, sir. Core systems are online and ready."
 
-def run_friday():
 
-    # Hook Keyboard Listener for Manual Ingest
+def _process_utterance(text: str, proactive) -> None:
+    """Handle a single user utterance — runs on its own thread so the
+    listener is never blocked."""
+    global ui
+
+    if ui:
+        ui.set_user_text(text)
+        ui.set_state("THINKING")
+
+    if proactive:
+        proactive.notify_user_spoke()
+
+    friday_reply = friday_core.generate_response(text)
+    print(f"Friday: {friday_reply}")
+
+    # Brief cooldown so the mic doesn't catch her echo
+    time.sleep(0.8)
+    if ui:
+        ui.set_subtitle_text("")
+        ui.set_user_text("")
+        ui.set_state("STANDBY")
+
+
+def run_friday():
+    global ui
+
+    # ── Keyboard Hotkey ─────────────────────────────────────────────────
     try:
         import keyboard
         import pygame
         from ui_engine import MANUAL_INGEST_CMD
+
         def _inject_clipboard():
             pygame.event.post(pygame.event.Event(MANUAL_INGEST_CMD))
-            
+
         keyboard.add_hotkey("ctrl+alt+v", _inject_clipboard)
         print("[System: Global Clipboard listener active (Ctrl+Alt+V)]")
     except ImportError:
-        print("[System WARNING: 'keyboard' module not installed. Global Hotkey disabled. Run 'pip install keyboard'.]")
+        print("[System WARNING: 'keyboard' module not installed. Global Hotkey disabled.]")
 
-    global ui
     print("\n[System: Booting Apex Friday Core...]")
-    
-    # 1. Boot the UI in the background
+
+    # ── 1. Boot UI ──────────────────────────────────────────────────────
     ui = NeuralVisualizer()
     ui.start()
-    
-    # 2. Instant Startup Greeting
+
+    # ── 2. Instant Greeting ─────────────────────────────────────────────
     greeting = get_greeting()
     print(f"Friday: {greeting}")
     ui.set_state("TALKING")
     ui.set_subtitle_text(greeting)
     local_voice.speak(greeting)
 
-    # 3. Boot the Proactive Engine in its own daemon thread. It NEVER
-    # speaks directly -- it only synthesizes Goal Summaries in the background.
+    # ── 3. Boot background daemons ──────────────────────────────────────
     proactive = ProactiveEngine(ui=ui, interval_seconds=1800)
     proactive.start()
 
-    # 3b. Boot the Learning Engine
-    learning = LearningEngine(ui=ui)
-    learning.start()
+    try:
+        from learning_engine import LearningEngine
+        learning = LearningEngine(ui=ui)
+        learning.start()
+    except Exception as e:
+        print(f"[System] LearningEngine skipped: {e}")
+        learning = None
 
+    # ── 4. Start the Continuous Listener (daemon) ───────────────────────
+    listener = local_ears.get_listener()
+    listener.start()
+
+    # ── 5. Main event loop — lightweight poll ───────────────────────────
     try:
         while True:
-            # 4. Standby / Listening Mode
-            ui.set_state("STANDBY")
-            user_text = local_ears.listen_and_transcribe()
+            # Check if the listener has a new transcription
+            try:
+                user_text = listener.result_queue.get_nowait()
+            except Empty:
+                user_text = None
 
-            if not user_text:
-                continue
+            if user_text:
+                # Process on a background thread so we don't block the poll
+                threading.Thread(
+                    target=_process_utterance,
+                    args=(user_text, proactive),
+                    daemon=True,
+                ).start()
 
-            print(f"\nYou: {user_text}")
-            ui.set_user_text(user_text)
-
-            # The user actually spoke -- reset the ProactiveEngine's idle timer.
-            proactive.notify_user_spoke()
-
-            # 5. Thinking Mode
-            ui.set_state("THINKING")
-            friday_reply = friday_core.generate_response(user_text)
-            print(f"Friday: {friday_reply}")
-
-            # 6. Talking Mode setup done internally via generator hooks...
-            # The subtitle is now driven natively via UI integration inside stream.
-            
-            # --- THE FIX: COOL DOWN ---
-            # 1.2s "dead zone" after she stops talking so the mic doesn't
-            # catch her echo or the speaker click-off as a new utterance.
-            print("[System: Cooling down audio sensors...]")
-            time.sleep(1.2)
-            ui.set_subtitle_text("")
-            ui.set_user_text("")
-            ui.set_state("STANDBY")
+            # Give the CPU a tiny break — prevents 98% usage
+            time.sleep(0.01)
 
     except KeyboardInterrupt:
         print("\n[System: Shutting down Friday...]")
-        learning.stop()
+        listener.stop()
+        if learning:
+            learning.stop()
         proactive.stop()
         ui.stop()
+
 
 if __name__ == "__main__":
     run_friday()
