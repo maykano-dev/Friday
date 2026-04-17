@@ -155,10 +155,13 @@ class NeuralVisualizer:
             pass
 
         BG_COLOR = (10, 12, 16)
-        NODE_COLOR = (120, 200, 255)
-        LINE_COLOR = (40, 80, 120)
         SUBTITLE_COLOR = (220, 235, 255)
         SUBTITLE_BG = (5, 8, 12)
+
+        # Dynamic sphere colors — lerp targets per state
+        current_node_r, current_node_g, current_node_b = 120.0, 200.0, 255.0
+        current_line_r, current_line_g, current_line_b = 40.0, 80.0, 120.0
+        COLOR_LERP = 0.06  # smooth transition speed
 
         while self.running:
             # --- CRITICAL FIX: The Event Pump ---
@@ -245,37 +248,53 @@ class NeuralVisualizer:
             if self.sphere_pulse_overclock > 1.0:
                 self.sphere_pulse_overclock += (1.0 - self.sphere_pulse_overclock) * 0.1
             
-            # State Logic
+            # State Logic — color targets + radius behavior
             t = time.time()
             if self.state == "STANDBY":
-                self.target_radius = self.base_radius + math.sin(t * 2) * 10
+                # Warm red heartbeat — pulsing like a waiting heart
+                target_nr, target_ng, target_nb = 255.0, 50.0, 50.0
+                target_lr, target_lg, target_lb = 120.0, 20.0, 20.0
+                heartbeat = (math.sin(t * 3.0) + 1) / 2  # ~90 BPM feel
+                self.target_radius = self.base_radius + heartbeat * 20
                 rotation_speed = 0.01
             elif self.state == "THINKING":
-                # Slow breathing glow — radius pulses between base+20 and base+50
-                breath = (math.sin(t * 1.5) + 1) / 2  # 0..1 oscillation
+                # Apex Blue breathing glow — doubled rotation
+                target_nr, target_ng, target_nb = 0.0, 212.0, 255.0
+                target_lr, target_lg, target_lb = 0.0, 80.0, 160.0
+                breath = (math.sin(t * 1.5) + 1) / 2
                 self.target_radius = self.base_radius + 20 + breath * 30
-                rotation_speed = 0.03
+                rotation_speed = 0.06  # 2x normal
             elif self.state == "TALKING":
+                # Cyan/white shimmer — volume reactive
+                target_nr, target_ng, target_nb = 100.0, 255.0, 220.0
+                target_lr, target_lg, target_lb = 30.0, 120.0, 100.0
                 import state as _st
-                
-                # Try to get live volume from mixer for peak-meter sync
                 try:
-                    is_busy = pygame.mixer.music.get_busy()
+                    is_busy = pygame.mixer.get_busy() if hasattr(pygame.mixer, 'get_busy') else False
                 except Exception:
                     is_busy = False
-                
-                if is_busy:
-                    # Simulate volume peak from state (updated by mic RMS)
-                    amp_obj = _st.current_volume
-                    amp = amp_obj.value if hasattr(amp_obj, 'value') else float(amp_obj or 0.0)
-                    # Mix real amplitude with a baseline pulse so she always looks alive
-                    voice_pulse = (math.sin(t * 6) + 1) / 2 * 25  # fast shimmer
-                    visual_amp = min(amp / 150, 80) + voice_pulse
-                else:
-                    visual_amp = (math.sin(t * 4) + 1) / 2 * 15  # idle pulse
-                    
+                amp_obj = _st.current_volume
+                amp = amp_obj.value if hasattr(amp_obj, 'value') else float(amp_obj or 0.0)
+                voice_pulse = (math.sin(t * 6) + 1) / 2 * 25
+                visual_amp = min(amp / 150, 80) + voice_pulse
                 self.target_radius = self.base_radius + visual_amp * self.sphere_pulse_overclock
                 rotation_speed = 0.08
+            else:  # IDLE or unknown
+                target_nr, target_ng, target_nb = 120.0, 200.0, 255.0
+                target_lr, target_lg, target_lb = 40.0, 80.0, 120.0
+                self.target_radius = self.base_radius + math.sin(t * 1.0) * 5
+                rotation_speed = 0.005
+
+            # Smooth color lerp
+            current_node_r += (target_nr - current_node_r) * COLOR_LERP
+            current_node_g += (target_ng - current_node_g) * COLOR_LERP
+            current_node_b += (target_nb - current_node_b) * COLOR_LERP
+            current_line_r += (target_lr - current_line_r) * COLOR_LERP
+            current_line_g += (target_lg - current_line_g) * COLOR_LERP
+            current_line_b += (target_lb - current_line_b) * COLOR_LERP
+
+            NODE_COLOR = (int(current_node_r), int(current_node_g), int(current_node_b))
+            LINE_COLOR = (int(current_line_r), int(current_line_g), int(current_line_b))
                 
             # Slow down interpolation (0.05) for "liquid" movement
             self.current_radius += (self.target_radius - self.current_radius) * 0.05
