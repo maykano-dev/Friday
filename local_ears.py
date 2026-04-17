@@ -196,9 +196,29 @@ class ContinuousListener:
             except OSError:
                 pass
 
-            if text:
-                print(f"\nYou: {text}")
-                self.result_queue.put(text)
+            # ── Text-level hallucination filter ──
+            if not text or len(text) < 3:
+                continue
+
+            # Common Whisper phantom outputs on near-silent audio
+            HALLUCINATIONS = {
+                "thank you", "thanks", "thank you.", "thanks.",
+                "thanks for watching", "thanks for watching.",
+                "grazie", "grazie.", "bye", "bye.", "you",
+                "the end", "the end.", "subtitle", "subtitles",
+                "subscribe", "like and subscribe",
+                "silence", "...", "…",
+            }
+            if text.lower().strip().rstrip(".!?,") in HALLUCINATIONS:
+                continue
+
+            # Discard if it's just a number or single repeated character
+            stripped = text.strip()
+            if stripped.isdigit() or (len(set(stripped.replace(" ", ""))) <= 1):
+                continue
+
+            print(f"\nYou: {text}")
+            self.result_queue.put(text)
 
         stream.stop_stream()
         stream.close()
