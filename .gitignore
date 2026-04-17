@@ -1,0 +1,36 @@
+# Environment & Secrets
+.env
+
+# Model binaries (too large for GitHub)
+models/
+voices/
+*.onnx
+*.onnx.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Audio temp files
+temp_audio.wav
+temp_speech_*.mp3
+_tts_chunk_*.mp3
+
+# Databases (local state — don't push)
+friday_brain.db
+chroma_db/
+
+# PyTorch Hub cache
+.cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,24 @@
+# --- Neural Interface & GUI ---
+pygame>=2.6.0
+
+# --- Audio Cortex (STT & VAD) ---
+PyAudio>=0.2.14
+faster-whisper>=1.0.0
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# --- Vision & Multimodal Processing ---
+Pillow>=10.0.0
+
+# --- Offline Text-to-Speech (Fallback) ---
+pyttsx3>=2.90
+
+# --- Semantic Memory Vault ---
+chromadb>=0.4.0
+
+# --- Autonomous Execution Subsystems ---
+keyboard>=0.13.5
+requests>=2.31.0
+playwright>=1.40.0
+playwright-stealth>=1.0.6
+beautifulsoup4>=4.12.0
