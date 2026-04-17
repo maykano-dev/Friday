@@ -251,16 +251,29 @@ class NeuralVisualizer:
                 self.target_radius = self.base_radius + math.sin(t * 2) * 10
                 rotation_speed = 0.01
             elif self.state == "THINKING":
-                self.target_radius = self.base_radius + 40
-                rotation_speed = 0.04
+                # Slow breathing glow — radius pulses between base+20 and base+50
+                breath = (math.sin(t * 1.5) + 1) / 2  # 0..1 oscillation
+                self.target_radius = self.base_radius + 20 + breath * 30
+                rotation_speed = 0.03
             elif self.state == "TALKING":
-                import state
-                amp_obj = state.current_volume
-                amp = amp_obj.value if hasattr(amp_obj, 'value') else float(amp_obj or 0.0)
+                import state as _st
                 
-                # Map amp (0 to ~32768) to radius extension
-                visual_amp = min(amp / 150, 80)
+                # Try to get live volume from mixer for peak-meter sync
+                try:
+                    is_busy = pygame.mixer.music.get_busy()
+                except Exception:
+                    is_busy = False
                 
+                if is_busy:
+                    # Simulate volume peak from state (updated by mic RMS)
+                    amp_obj = _st.current_volume
+                    amp = amp_obj.value if hasattr(amp_obj, 'value') else float(amp_obj or 0.0)
+                    # Mix real amplitude with a baseline pulse so she always looks alive
+                    voice_pulse = (math.sin(t * 6) + 1) / 2 * 25  # fast shimmer
+                    visual_amp = min(amp / 150, 80) + voice_pulse
+                else:
+                    visual_amp = (math.sin(t * 4) + 1) / 2 * 15  # idle pulse
+                    
                 self.target_radius = self.base_radius + visual_amp * self.sphere_pulse_overclock
                 rotation_speed = 0.08
                 

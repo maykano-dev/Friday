@@ -214,13 +214,22 @@ def generate_response(user_text: str) -> str:
     import json, local_voice, main
 
     reply_accum = ""
-    sentence_buffer = ""
+    current_phrase = ""
+    word_count = 0
     in_execute_block = False
     action_block = ""
     
     if hasattr(main, "ui") and main.ui: main.ui.set_state("TALKING")
 
-    # Regex block boundaries natively
+    def _yield_phrase():
+        """Send the current phrase to the voice engine."""
+        nonlocal current_phrase, word_count
+        phrase = current_phrase.strip()
+        if phrase:
+            local_voice.speak(phrase)
+        current_phrase = ""
+        word_count = 0
+
     for line in resp.iter_lines():
         if not line: continue
         try:
@@ -230,7 +239,7 @@ def generate_response(user_text: str) -> str:
         
         reply_accum += chunk
         
-        # Check execution parsing blocks!
+        # Check execution parsing blocks
         if "<EXECUTE>" in reply_accum and not in_execute_block:
             in_execute_block = True
             
@@ -246,19 +255,21 @@ def generate_response(user_text: str) -> str:
                         except Exception as e: print(f"[Friday Action Err]: {e}")
             continue
 
-        sentence_buffer += chunk
-        if hasattr(main, "ui") and main.ui: main.ui.set_subtitle_text(reply_accum.replace("<EXECUTE>","").replace("</EXECUTE>",""))
-            
-        # Fast Sentence Yield boundary — includes comma for snappy clause-level playback
-        if any(p in sentence_buffer for p in [". ", "? ", "! ", ", ", "\n"]):
-            out_sentence = sentence_buffer.strip()
-            if out_sentence:
-                local_voice.speak(out_sentence)
-            sentence_buffer = ""
-            
-    # Flush trailing text
-    if sentence_buffer.strip():
-        local_voice.speak(sentence_buffer.strip())
+        # Update subtitle live
+        if hasattr(main, "ui") and main.ui:
+            main.ui.set_subtitle_text(reply_accum.replace("<EXECUTE>","").replace("</EXECUTE>",""))
+
+        # Word-by-word accumulation with hybrid yield
+        current_phrase += chunk
+        word_count += len(chunk.split())
+
+        # Yield on punctuation boundary OR every 8 words (whichever first)
+        has_punctuation = any(p in chunk for p in [".", "?", "!", ",", "\n"])
+        if has_punctuation or word_count >= 8:
+            _yield_phrase()
+
+    # Flush any remaining text
+    _yield_phrase()
 
     reply = _EXECUTE_PATTERN.sub("", reply_accum).strip()
     if not reply:
