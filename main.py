@@ -11,7 +11,6 @@ Architecture:
 
 import time
 import threading
-import random
 from queue import Empty
 
 import friday_core
@@ -24,13 +23,11 @@ ui = None
 
 
 def get_greeting() -> str:
-    """Return a neutral startup greeting."""
-    responses = [
-        "Systems online. How can I help?",
-        "Friday initialized. Ready for input.",
-        "Core active. Standing by.",
-    ]
-    return random.choice(responses)
+    """Trigger a dynamic, non-hardcoded greeting."""
+    return friday_core.generate_response(
+        "SYSTEM_BOOT: Give me a unique, concise, witty, and casual startup greeting. "
+        "Do not use action tags."
+    )
 
 
 def _process_utterance(text: str, proactive) -> None:
@@ -80,6 +77,7 @@ def run_friday():
     ui.start()
 
     # ── 2. Startup Greeting ─────────────────────────────────────────────
+    ui.set_state("THINKING")
     ui.set_subtitle_text("")
     greeting = get_greeting()
     print(f"Friday: {greeting}")

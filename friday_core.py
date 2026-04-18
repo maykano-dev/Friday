@@ -38,21 +38,38 @@ MAX_TURNS = 6
 MAX_MESSAGES = MAX_TURNS * 2
 
 SYSTEM_PROMPT = (
-    "You are Friday, a highly capable general assistant. Your goal is to help any user with any task, from coding and writing to web research and PC management. Be concise, witty, and fast. Formulate your response naturally. Always use <EXECUTE> tags for system actions."
-    "\n\n"
-    "ACTION PROTOCOL: If the user asks you to create a folder or directory, "
-    "append an action block at the VERY END of your reply formatted exactly like this:\n"
+    "You are Friday, a highly capable, witty, and natural assistant. "
+    "Your goal is to help with any task while maintaining a smooth, human-like conversation. "
+    "Treat all messages in the chat history as COMPLETED context; do not repeat or re-execute "
+    "any actions mentioned in history unless specifically requested again in the current message. "
+    "Always use <EXECUTE> tags for system actions. Formulate your spoken responses as complete, "
+    "natural sentences. Do not use robotic filler like 'Done' or 'Execute' unless it fits "
+    "the natural flow of conversation."
+)
+
+ACTION_PROTOCOL_PROMPT = (
+    "ACTION PROTOCOL: If you need to trigger a system action, append an action block at the "
+    "VERY END of your reply formatted exactly like this:\n"
     "<EXECUTE>{\"action\": \"create_dir\", \"path\": \"C:/absolute/path/here\"}</EXECUTE>\n"
     "Rules for the action block:\n"
     "- Use strictly valid JSON with DOUBLE quotes only.\n"
-    "- Use forward slashes in the path (e.g. C:/Users/Maikano/Desktop/ProjectX).\n"
+    "- Use forward slashes in paths.\n"
     "- Put NOTHING after the closing </EXECUTE> tag.\n"
-    "- Keep the spoken part before the tag short, like 'Done.' or 'On it.'"
+    "- Keep all markup inside the action block only."
+)
+
+SYSTEM_BOOT_TRIGGER = "SYSTEM_BOOT:"
+SYSTEM_BOOT_PROMPT = (
+    "The next message is an internal startup trigger, not a user request. "
+    "Reply with one unique, concise, witty, casual startup greeting. "
+    "Do not use action tags."
 )
 
 # Regex used to lift an embedded action payload out of the model's reply.
 _EXECUTE_PATTERN = re.compile(r"<EXECUTE>(.*?)</EXECUTE>", re.DOTALL)
 _action_executor = action_engine.ActionExecutor()
+_EXECUTE_OPEN_TAG = "<EXECUTE>"
+_EXECUTE_CLOSE_TAG = "</EXECUTE>"
 
 # Phrases that tell Friday to persist a memory instead of chatting.
 # Matched case-insensitively at the start of the user's input.
@@ -94,6 +111,11 @@ def _extract_save_payload(user_text: str) -> Optional[str]:
     return None
 
 
+def _is_system_boot_trigger(user_text: str) -> bool:
+    """Return True when the prompt is an internal boot-time trigger."""
+    return user_text.lstrip().upper().startswith(SYSTEM_BOOT_TRIGGER)
+
+
 def _post_groq(payload: Dict[str, Any], *, stream: bool) -> requests.Response | str:
     """Send a request to Groq and normalize transport-layer errors."""
     headers = {
@@ -119,6 +141,34 @@ def _post_groq(payload: Dict[str, Any], *, stream: bool) -> requests.Response | 
         return f"Groq API error: {e.response.status_code} — {e.response.text[:200]}."
     except requests.exceptions.RequestException as e:
         return f"Network error: {e}."
+
+
+def _visible_reply_text(raw_text: str) -> str:
+    """Strip complete and partial EXECUTE markup from user-facing text."""
+    cleaned = _EXECUTE_PATTERN.sub("", raw_text)
+
+    # Hide an opened execute block even before the closing tag arrives.
+    open_tag_index = cleaned.find(_EXECUTE_OPEN_TAG)
+    if open_tag_index != -1 and _EXECUTE_CLOSE_TAG not in cleaned[open_tag_index:]:
+        cleaned = cleaned[:open_tag_index]
+
+    # Hide a trailing partial execute tag fragment such as "<EXE" or "</EXEC".
+    partial_start = cleaned.rfind("<")
+    if partial_start != -1:
+        fragment = cleaned[partial_start:]
+        if _EXECUTE_OPEN_TAG.startswith(fragment) or _EXECUTE_CLOSE_TAG.startswith(fragment):
+            cleaned = cleaned[:partial_start]
+
+    return cleaned
+
+
+def _build_system_boot_messages(user_text: str) -> List[Dict[str, str]]:
+    """Build a minimal hidden boot prompt without chat or memory side effects."""
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_BOOT_PROMPT},
+        {"role": "user", "content": user_text},
+    ]
 
 
 def _build_messages(
@@ -158,7 +208,10 @@ def _build_messages(
     if image_data_list:
         sys_text += "\n\nOBSERVER MODE ACTIVE: The user has shown you visual data. Observe it carefully."
 
-    messages: List[Dict[str, Any]] = [{"role": "system", "content": sys_text}]
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": sys_text},
+        {"role": "system", "content": ACTION_PROTOCOL_PROMPT},
+    ]
 
     # Prepend chat history
     recent = memory_vault.get_recent_memories(limit=10)
@@ -201,6 +254,32 @@ def generate_response(user_text: str) -> str:
         if save_payload:
             memory_vault.store_memory(save_payload)
         return "Saved to memory."
+
+    if _is_system_boot_trigger(user_text):
+        if not GROQ_API_KEY:
+            return "Friday initialized. Ready for input."
+
+        payload = {
+            "model": MODEL_NAME,
+            "messages": _build_system_boot_messages(user_text),
+            "stream": False,
+            "temperature": 0.9,
+            "max_tokens": 80,
+        }
+
+        resp = _post_groq(payload, stream=False)
+        if isinstance(resp, str):
+            return resp
+
+        try:
+            data = resp.json()
+            reply = data.get("choices", [{}])[0].get(
+                "message", {}).get("content", "")
+        except ValueError:
+            return "Friday initialized. Ready for input."
+
+        reply = _visible_reply_text(reply).strip()
+        return reply or "Friday initialized. Ready for input."
 
     user_lower = user_text.lower().strip()
     for trigger in VOICE_INGEST_TRIGGERS:
@@ -248,6 +327,7 @@ def generate_response(user_text: str) -> str:
     reply_accum = ""
     sentence_buffer = ""
     word_count = 0
+    visible_length = 0
     in_execute_block = False
     action_block = ""
     sentence_endings = (".", "!", "?")
@@ -273,7 +353,7 @@ def generate_response(user_text: str) -> str:
                 word_count = len(sentence_buffer.split()) if sentence_buffer else 0
                 continue
 
-            if word_count >= 10:
+            if word_count >= 20:
                 local_voice.speak(phrase)
                 sentence_buffer = ""
                 word_count = 0
@@ -327,22 +407,29 @@ def generate_response(user_text: str) -> str:
                             print(f"[Friday Action Err]: {e}")
             continue
 
+        visible_reply = _visible_reply_text(reply_accum)
+
         # Update subtitle live
         if hasattr(main, "ui") and main.ui:
-            main.ui.set_subtitle_text(reply_accum.replace(
-                "<EXECUTE>", "").replace("</EXECUTE>", ""))
+            main.ui.set_subtitle_text(visible_reply)
 
         # Accumulate into sentence buffer
-        sentence_buffer += chunk
-        word_count += len(chunk.split())
+        if len(visible_reply) < visible_length:
+            visible_length = len(visible_reply)
+
+        visible_delta = visible_reply[visible_length:]
+        visible_length = len(visible_reply)
+
+        sentence_buffer += visible_delta
+        word_count += len(visible_delta.split())
         _flush_buffer()
 
     # Flush any remaining text
     _flush_buffer(force=True)
 
-    reply = _EXECUTE_PATTERN.sub("", reply_accum).strip()
+    reply = _visible_reply_text(reply_accum).strip()
     if not reply:
-        reply = "Done."
+        reply = "All set."
 
     try:
         memory_vault.store_memory(f"User: {user_text}")

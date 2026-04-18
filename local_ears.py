@@ -5,7 +5,7 @@ Architecture:
   When VAD detects human speech:
     1. If Friday is currently talking → fires interrupt() kill-switch instantly.
     2. Records until 1.2s of silence, then checks the hallucination guard.
-    3. If audio < 0.8s of actual speech → discards (hallucination/noise).
+    3. If audio < 1.0s of actual speech → discards (hallucination/noise).
     4. Otherwise → ships the .wav to Groq Whisper API and pushes the
        transcribed text into a result_queue for main.py to consume.
 """
@@ -99,8 +99,8 @@ class ContinuousListener:
     RATE = 16000
     SILENCE_TIMEOUT = 1.2       # seconds of silence to end an utterance
     PRE_BUFFER = 0.2            # ignore first 0.2s (pop filter)
-    MIN_SPEECH_DURATION = 0.8   # hallucination guard — discard short noise
-    VAD_THRESHOLD = 0.75        # higher threshold ignores laptop fan hum
+    MIN_SPEECH_DURATION = 1.0   # require clearer speech before we treat it as intentional
+    VAD_THRESHOLD = 0.85        # less sensitive to room noise and Friday's own voice
 
     def __init__(self):
         self.result_queue: Queue = Queue()
@@ -213,6 +213,8 @@ class ContinuousListener:
                 "subscribe", "like and subscribe",
                 "silence", "...", "…",
                 "੧", "੧ ੧ ੧", "\u0a67", "\u0a67 \u0a67 \u0a67",
+                "বোর্তে", "বোর্তে বোর্তে বোর্তে",
+                "up friday", "saya membuat",
                 "you.", "i", "um", "hmm", "uh",
             }
             if text.lower().strip().rstrip(".!?,") in HALLUCINATIONS:

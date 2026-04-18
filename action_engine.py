@@ -94,6 +94,7 @@ class ActionExecutor:
 
         if not isinstance(raw_path, str) or not raw_path.strip():
             print(f"[Friday Action] create_dir FAILED: missing or empty 'path' (payload={payload!r})")
+            ActionExecutor._speak_confirmation("I encountered an error while creating that directory.")
             return
 
         # Normalize: expand ~, resolve to absolute, so relative paths
@@ -103,7 +104,10 @@ class ActionExecutor:
             abs_path = os.path.abspath(expanded)
         except Exception as e:
             print(f"[Friday Action] create_dir FAILED during path normalization: {type(e).__name__}: {e}")
+            ActionExecutor._speak_confirmation("I encountered an error while creating that directory.")
             return
+
+        dir_name = os.path.basename(abs_path.rstrip("\\/")) or abs_path
 
         parent = os.path.dirname(abs_path)
         print(f"[Friday Action]   normalized: {abs_path}")
@@ -113,30 +117,39 @@ class ActionExecutor:
         if os.path.exists(abs_path):
             if os.path.isdir(abs_path):
                 print(f"[Friday Action] create_dir no-op: directory already exists at {abs_path}")
+                ActionExecutor._speak_confirmation(f"The directory {dir_name} already exists.")
                 return
             print(f"[Friday Action] create_dir FAILED: path exists but is NOT a directory: {abs_path}")
+            ActionExecutor._speak_confirmation("I encountered an error while creating that directory.")
             return
 
         try:
             os.makedirs(abs_path, exist_ok=True)
         except PermissionError as e:
             print(f"[Friday Action] create_dir PERMISSION DENIED: {e}")
+            ActionExecutor._speak_confirmation("I encountered an error while creating that directory.")
             return
         except FileExistsError as e:
             print(f"[Friday Action] create_dir race: {e}")
+            ActionExecutor._speak_confirmation("I encountered an error while creating that directory.")
             return
         except OSError as e:
             print(f"[Friday Action] create_dir OSError (errno={e.errno}): {e.strerror} -- on {e.filename!r}")
+            ActionExecutor._speak_confirmation("I encountered an error while creating that directory.")
             return
         except Exception as e:
             print(f"[Friday Action] create_dir UNEXPECTED {type(e).__name__}: {e}")
+            ActionExecutor._speak_confirmation("I encountered an error while creating that directory.")
             return
 
         if os.path.isdir(abs_path):
             print(f"[Friday Action] created directory: {abs_path}")
-            ActionExecutor._speak_confirmation("Directory created successfully.")
+            ActionExecutor._speak_confirmation(
+                f"The directory {dir_name} has been created successfully."
+            )
         else:
             print(f"[Friday Action] create_dir completed without raising but target is missing: {abs_path}")
+            ActionExecutor._speak_confirmation("I encountered an error while creating that directory.")
 
     @staticmethod
     def _write_file(payload: Dict[str, Any]) -> None:

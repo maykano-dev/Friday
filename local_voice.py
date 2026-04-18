@@ -23,7 +23,7 @@ except ImportError:
     edge_tts = None
     print("[Friday TTS] WARNING: edge-tts not installed. Run 'pip install edge-tts'.")
 
-VOICE = "en-US-AriaNeural"
+VOICE = "en-US-JennyNeural"
 # +5% rate = alert, -2Hz pitch = body/resonance
 RATE = "+5%"
 PITCH = "-2Hz"
@@ -38,7 +38,7 @@ except pygame.error:
     pass
 
 # ── Threading Primitives ────────────────────────────────────────────────────
-_text_queue: Queue  = Queue()   # text phrases waiting to be rendered
+_text_queue: Queue = Queue()   # text phrases waiting to be rendered
 _audio_queue: Queue = Queue()   # rendered .mp3 paths waiting to be played
 _interrupted = threading.Event()
 _renderer_thread: threading.Thread | None = None
@@ -55,7 +55,8 @@ def _sync_talking_state(channels=None) -> None:
     except Exception:
         any_busy = False
 
-    state.set_talking(not _text_queue.empty() or not _audio_queue.empty() or any_busy)
+    state.set_talking(not _text_queue.empty()
+                      or not _audio_queue.empty() or any_busy)
 
 
 # ── Pre-connect ─────────────────────────────────────────────────────────────
@@ -71,6 +72,7 @@ def _warmup() -> None:
             os.remove(path)
     except Exception:
         pass
+
 
 threading.Thread(target=_warmup, daemon=True).start()
 
@@ -102,7 +104,8 @@ def _renderer_worker() -> None:
             try:
                 # Stream audio chunks directly into memory — no disk I/O
                 buf = BytesIO()
-                comm = edge_tts.Communicate(text, VOICE, rate=RATE, pitch=PITCH)
+                comm = edge_tts.Communicate(
+                    text, VOICE, rate=RATE, pitch=PITCH)
                 for chunk in asyncio.run(_collect_audio(comm)):
                     if _interrupted.is_set():
                         break
@@ -140,7 +143,7 @@ async def _collect_audio(comm) -> list[bytes]:
 # ── Player Thread (Dual-Channel Pre-loading) ────────────────────────────────
 def _player_worker() -> None:
     """Plays segments back-to-back with zero gap.
-    
+
     Uses pygame.mixer.Sound on alternating channels so the next segment
     is pre-loaded into memory while the current one is still playing.
     """
@@ -198,11 +201,13 @@ def _player_worker() -> None:
 def _ensure_workers() -> None:
     global _renderer_thread, _player_thread
     if _renderer_thread is None or not _renderer_thread.is_alive():
-        _renderer_thread = threading.Thread(target=_renderer_worker, daemon=True)
+        _renderer_thread = threading.Thread(
+            target=_renderer_worker, daemon=True)
         _renderer_thread.start()
     if _player_thread is None or not _player_thread.is_alive():
         _player_thread = threading.Thread(target=_player_worker, daemon=True)
         _player_thread.start()
+
 
 _ensure_workers()
 
