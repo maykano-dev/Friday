@@ -16,6 +16,8 @@ import requests
 import action_engine
 import memory_vault
 
+_in_handler = False
+
 # ── Groq Cloud API ──────────────────────────────────────────────────────────
 # Auto-load .env
 _env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -355,6 +357,12 @@ def _build_messages(
 
 def generate_response(user_text: str) -> str:
     """Send user_text to the best available endpoint and return reply."""
+    global _in_handler
+
+    if _in_handler:
+        print("[Friday] WARNING: Recursive handler call detected, using LLM fallback")
+        return _generate_llm_response(user_text)
+
     if not user_text or not user_text.strip():
         return "I didn't catch that."
 
@@ -472,6 +480,10 @@ def generate_response(user_text: str) -> str:
         # Space & Science
         "nasa": lambda txt: _handle_nasa_apod(),
         "space picture": lambda txt: _handle_nasa_apod(),
+        "astronomy": lambda txt: _handle_astronomy(txt),
+        "sunrise": lambda txt: _handle_astronomy(txt),
+        "sunset": lambda txt: _handle_astronomy(txt),
+        "moon": lambda txt: _handle_astronomy(txt),
         "iss": lambda txt: _handle_iss_location(),
         "space station": lambda txt: _handle_iss_location(),
         "spacex": lambda txt: _handle_spacex_launch(),
@@ -488,6 +500,8 @@ def generate_response(user_text: str) -> str:
         "time in": lambda txt: _handle_timezone(txt),
         "what time": lambda txt: _handle_timezone(txt),
         "timezone": lambda txt: _handle_timezone(txt),
+        "holiday": lambda txt: _handle_holidays(txt),
+        "public holiday": lambda txt: _handle_holidays(txt),
         "what can you do": lambda txt: _handle_what_can_you_do(),
         "capabilities": lambda txt: _handle_what_can_you_do(),
         "skills": lambda txt: _handle_what_can_you_do(),
@@ -533,18 +547,22 @@ def generate_response(user_text: str) -> str:
             break
 
     if matched_handler:
-        print(f"[Friday] Executing handler for: {user_text}")
-        result = matched_handler(user_text)
-        if result:
-            print(f"[Friday] Handler returned: {result[:100]}...")
-            try:
-                memory_vault.store_memory(f"User: {user_text}")
-                memory_vault.store_memory(f"Friday: {result}")
-            except:
-                pass
-            return result
-        else:
-            print(f"[Friday] Handler returned None, falling back to LLM")
+        _in_handler = True
+        try:
+            print(f"[Friday] Executing handler for: {user_text}")
+            result = matched_handler(user_text)
+            if result:
+                print(f"[Friday] Handler returned: {result[:100]}...")
+                try:
+                    memory_vault.store_memory(f"User: {user_text}")
+                    memory_vault.store_memory(f"Friday: {result}")
+                except:
+                    pass
+                return result
+            else:
+                print(f"[Friday] Handler returned None, falling back to LLM")
+        finally:
+            _in_handler = False
 
     # Check if this is a research query
     research_keywords = ["search", "find", "look up",
@@ -818,11 +836,70 @@ def _handle_search(query: str) -> Optional[str]:
     try:
         from free_web_tools import get_web_tools
         tools = get_web_tools()
-        search_term = query.replace("search", "").replace(
-            "find", "").replace("look up", "").strip()
-        return tools.research(search_term or query)
-    except:
+
+        # CLEAN THE QUERY - remove command words
+        command_words = [
+            "search", "find", "look up", "google", "for me",
+            "tell me about", "what is", "who is", "information on",
+            "search for", "google for", "look for"
+        ]
+
+        cleaned = query.lower()
+        for word in command_words:
+            cleaned = cleaned.replace(word, "")
+
+        import re
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+        if not cleaned or len(cleaned) < 3:
+            words = query.split()
+            for i, word in enumerate(words):
+                if word.lower() in ["for", "about", "on"]:
+                    cleaned = " ".join(words[i+1:])
+                    break
+
+        print(f"[Friday] Search query cleaned: '{query}' -> '{cleaned}'")
+        return tools.research(cleaned or query)
+    except Exception as e:
+        print(f"[Friday Search Handler] Error: {e}")
         return None
+
+
+def _generate_llm_response(user_text: str) -> str:
+    """Direct LLM response without handler routing."""
+    try:
+        relevant_memories = memory_vault.retrieve_memory(user_text)
+    except:
+        relevant_memories = []
+
+    messages = _build_messages(user_text, relevant_memories)
+
+    if not GROQ_API_KEY:
+        try:
+            from smart_router import get_router
+            router = get_router()
+            response, _ = router.route(user_text, SYSTEM_PROMPT, allow_cache=True)
+            return response
+        except:
+            return "I'm having trouble connecting right now."
+
+    payload = {
+        "model": MODEL_NAME,
+        "messages": messages,
+        "stream": False,
+        "temperature": 0.7,
+        "max_tokens": 512,
+    }
+
+    resp = _post_groq(payload, stream=False)
+    if isinstance(resp, str):
+        return resp
+
+    try:
+        data = resp.json()
+        return data.get("choices", [{}])[0].get("message", {}).get("content", "I'm not sure how to respond.")
+    except:
+        return "I'm having trouble processing that right now."
 
 
 def _handle_cat_fact() -> str:
@@ -1243,6 +1320,20 @@ def _handle_iss_location() -> Optional[str]:
     except Exception as e:
         print(f"[Friday] ISS error: {e}")
     return None
+
+
+def _handle_astronomy(text: str) -> Optional[str]:
+    """Get sunrise/sunset times for a location."""
+    try:
+        from free_web_tools import get_web_tools
+        tools = get_web_tools()
+        import re
+        city_match = re.search(r'(?:in|for)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)', text, re.IGNORECASE)
+        city = city_match.group(1) if city_match else "London"
+        return tools.get_astronomy(city)
+    except Exception as e:
+        print(f"[Friday Astronomy Handler] Error: {e}")
+        return None
 
 
 def _handle_pokemon(text: str) -> Optional[str]:

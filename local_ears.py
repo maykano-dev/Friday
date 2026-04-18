@@ -219,81 +219,65 @@ class ContinuousListener:
             text = self._transcribe_memory(frames, pa)
 
             if text and len(text) >= 3:
+                # SMARTER WAKE WORD REMOVAL
                 wake_words = ["friday", "hey friday",
                               "okay friday", "hi friday", "hello friday"]
                 text_lower = text.lower()
+
+                # Only remove wake word if it appears at the very start.
                 for wake in wake_words:
                     if text_lower.startswith(wake):
                         text = text[len(wake):].strip()
-                        print(f"[Ear] Removed wake word '{wake}'")
+                        text = text.lstrip(",.!?;: ")
+                        print(
+                            f"[Ear] Removed wake word '{wake}', command: '{text}'")
                         break
 
-                if text_lower.startswith("friday"):
-                    text = text[6:].strip().lstrip(",.!? ")
+                if text_lower.startswith("friday") and not any(
+                        text_lower.startswith(w) for w in wake_words):
+                    text = text[6:].strip().lstrip(",.!?;: ")
+                    print(f"[Ear] Removed 'Friday', command: '{text}'")
 
-                HALLUCINATIONS = [
-                    "thank you", "thanks", "thanks for watching", "bye", "you",
-                    "the end", "subscribe", "silence", "...", "um", "hmm",
-                    "ਸ੍ਰੇ", "োরে", "sequestação", "subtitle", "captions"
-                ]
-
-                text_stripped = text.lower().strip().rstrip(".!?,")
-                if text_stripped in HALLUCINATIONS or len(text_stripped) < 3:
-                    print(f"[Ear] Discarding hallucination: '{text}'")
-                    continue
-
+                # DISCARD GIBBERISH BEFORE PROCESSING
                 ascii_count = sum(1 for c in text if ord(c) < 128)
-                if ascii_count / len(text) < 0.5:
-                    print(f"[Ear] Discarding non-ASCII gibberish: '{text}'")
-                    continue
+                if len(text) > 0:
+                    ascii_ratio = ascii_count / len(text)
+                    if ascii_ratio < 0.5:
+                        print(
+                            f"[Ear] Discarding non-ASCII gibberish: '{text}' "
+                            f"(ASCII ratio: {ascii_ratio:.2f})")
+                        continue
+                    if ascii_ratio < 0.9:
+                        cleaned = ''.join(c for c in text if ord(c) < 128)
+                        print(
+                            f"[Ear] Cleaned non-ASCII: '{text}' -> '{cleaned}'")
+                        text = cleaned
 
-                STOP_COMMANDS = ["stop", "shut up", "quiet",
-                                 "silence", "enough", "be quiet"]
+                STOP_COMMANDS = [
+                    "stop", "shut up", "quiet", "silence", "enough",
+                    "be quiet", "hush", "shhh", "stfu"
+                ]
+                text_stripped = text.lower().strip().rstrip(".!?")
                 if text_stripped in STOP_COMMANDS:
                     local_voice.interrupt()
                     print("[Ear] Stop command detected")
                     continue
 
+                HALLUCINATIONS = [
+                    "thank you", "thanks", "thanks for watching", "bye",
+                    "you", "the end", "subscribe", "silence", "...", "um",
+                    "hmm", "ਸ੍ਰੇ", "োরে", "sequestação"
+                ]
+                if text_stripped in HALLUCINATIONS or len(text_stripped) < 3:
+                    print(f"[Ear] Discarding hallucination: '{text}'")
+                    continue
+
+                stripped = text.strip()
+                if stripped.isdigit() or len(set(stripped.replace(" ", ""))) <= 1:
+                    continue
+
                 print(f"\nYou: {text}")
                 self.result_queue.put(text)
-                for wake in wake_words:
-                    if text_lower.startswith(wake):
-                        text = text[len(wake):].strip()
-                        print(
-                            f"[Ear] Removed wake word '{wake}', remaining: '{text}'")
-                        break
-
-                if text_lower.startswith("friday") and not text_lower.startswith(tuple(wake_words)):
-                    text = text[7:].strip().lstrip(",.!? ")
-                    print(f"[Ear] Removed 'Friday', remaining: '{text}'")
-
-            # NEW: Hard-coded stop commands
-            STOP_COMMANDS = [
-                "stop", "shut up", "quiet", "silence", "enough",
-                "be quiet", "hush", "shhh", "stfu"
-            ]
-            if text and text.lower().strip().rstrip(".!?") in STOP_COMMANDS:
-                local_voice.interrupt()
-                print("[Ear] Stop command detected")
-                continue
-
-            if not text or len(text) < 3:
-                continue
-
-            # Hallucination filter
-            HALLUCINATIONS = {
-                "thank you", "thanks", "thanks for watching", "bye", "you",
-                "the end", "subscribe", "silence", "...", "um", "hmm"
-            }
-            if text.lower().strip().rstrip(".!?,") in HALLUCINATIONS:
-                continue
-
-            stripped = text.strip()
-            if stripped.isdigit() or len(set(stripped.replace(" ", ""))) <= 1:
-                continue
-
-            print(f"\nYou: {text}")
-            self.result_queue.put(text)
 
         stream.stop_stream()
         stream.close()
