@@ -97,7 +97,7 @@ class ContinuousListener:
     FORMAT = pyaudio.paInt16
     CHANNELS = 1
     RATE = 16000
-    SILENCE_TIMEOUT = 1.2       # seconds of silence to end an utterance
+    SILENCE_TIMEOUT = 0.8       # seconds of silence to end an utterance
     PRE_BUFFER = 0.1            # ignore first 0.1s (pop filter)
     MIN_SPEECH_DURATION = 0.5   # require clearer speech before we treat it as intentional
     VAD_THRESHOLD = 0.65        # LOWERED: Much more sensitive to your voice

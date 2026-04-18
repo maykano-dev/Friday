@@ -38,12 +38,10 @@ MAX_TURNS = 6
 MAX_MESSAGES = MAX_TURNS * 2
 
 SYSTEM_PROMPT = (
-    "You are Friday, a highly capable, witty, and human-like assistant. "
-    "Your goal is to help with any task while maintaining a smooth conversation. "
-    "Treat all chat history as COMPLETED context; do not repeat or re-execute "
-    "past actions unless explicitly asked again. Always use <EXECUTE> tags for "
-    "system actions. Speak in full, natural sentences. Do not use robotic "
-    "phrases like 'Done' or 'Execute' in your speech."
+    "You are Friday, a highly capable assistant. "
+    "When creating directories or files, NEVER use placeholders like 'YourUsername'. "
+    "Instead, use the tilde (~) to represent the user's home directory (e.g., '~/Desktop/Friday'). "
+    "I will automatically expand this to the correct path."
 )
 
 ACTION_PROTOCOL_PROMPT = (

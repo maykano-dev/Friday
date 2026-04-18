@@ -279,14 +279,17 @@ class NeuralVisualizer:
             t = time.time()
             if self.state == "STANDBY":
                 target_nr, target_ng, target_nb = 0.0, 80.0, 255.0  # Deep Blue
+                target_lr, target_lg, target_lb = 0.0, 40.0, 127.0
                 rotation_speed = 0.005
             elif self.state == "LISTENING":
                 target_nr, target_ng, target_nb = 255.0, 40.0, 40.0  # Warning Red
+                target_lr, target_lg, target_lb = 150.0, 20.0, 20.0
                 rotation_speed = 0.02
                 heartbeat = (math.sin(t * 8.0) + 1) / 2
                 self.target_radius = self.base_radius + heartbeat * 30
             elif self.state == "THINKING":
                 target_nr, target_ng, target_nb = 0.0, 212.0, 255.0
+                target_lr, target_lg, target_lb = 0.0, 80.0, 160.0
                 rotation_speed = 0.08
             elif self.state == "TALKING":
                 # Cyan/white shimmer — volume reactive
