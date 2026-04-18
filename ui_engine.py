@@ -14,6 +14,15 @@ class ContextCard:
         self.surface = surface
         self.label = label
 
+    def to_dict(self):
+        """Convert card to a serializable dictionary."""
+        return {
+            "card_type": self.card_type,
+            "content": self.content,
+            "label": self.label,
+            "url": getattr(self, "url", None),
+        }
+
 
 class WebResultCard(ContextCard):
     def __init__(self, url: str, status: str = "running"):

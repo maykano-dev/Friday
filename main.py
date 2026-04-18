@@ -9,6 +9,8 @@ Architecture:
       3. Sleeps 10ms per tick to keep CPU usage minimal.
 """
 
+import json
+import os
 import time
 import threading
 from queue import Empty
@@ -16,7 +18,7 @@ from queue import Empty
 import friday_core
 import local_voice
 import local_ears
-from ui_engine import NeuralVisualizer
+from ui_engine import ContextCard, NeuralVisualizer, WebResultCard
 from proactive_engine import ProactiveEngine
 
 ui = None
@@ -75,6 +77,19 @@ def run_friday():
     ui = NeuralVisualizer()
     ui.start()
 
+    if os.path.exists("resume_state.json"):
+        try:
+            with open("resume_state.json", "r", encoding="utf-8") as f:
+                saved_cards = json.load(f)
+            for c in saved_cards:
+                if c.get("card_type") == "WEB":
+                    ui.context_cards.append(WebResultCard(c.get("url", ""), status="complete"))
+                else:
+                    ui.context_cards.append(ContextCard(c.get("card_type", "TEXT"), c.get("content", ""), label=c.get("label", "")))
+            print("[System] Memory state resumed. Context Wing restored.")
+        except Exception as e:
+            print(f"[System Error] Failed to resume state: {e}")
+
     # ── 2. Startup Greeting ─────────────────────────────────────────────
     ui.set_state("THINKING")
     ui.set_subtitle_text("")
@@ -123,6 +138,15 @@ def run_friday():
 
     except KeyboardInterrupt:
         print("\n[System: Shutting down Friday...]")
+
+        try:
+            state_data = [card.to_dict() for card in ui.context_cards]
+            with open("resume_state.json", "w", encoding="utf-8") as f:
+                json.dump(state_data, f)
+            print("[System] State saved to resume_state.json")
+        except Exception as e:
+            print(f"[System Error] Failed to save state: {e}")
+
         listener.stop()
         if learning:
             learning.stop()
