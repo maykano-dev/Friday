@@ -336,27 +336,30 @@ def generate_response(user_text: str) -> str:
         main.ui.set_state("TALKING")
 
     def _flush_buffer(force: bool = False) -> None:
-        """Speak only complete thoughts so TTS keeps natural cadence."""
+        """Wait for natural phrases to prevent robotic word-by-word speech."""
         nonlocal sentence_buffer, word_count
         while True:
             phrase = sentence_buffer.strip()
-            if not phrase:
-                sentence_buffer = ""
-                word_count = 0
-                return
+            if not phrase: return
 
             match = sentence_pattern.match(phrase)
             if match:
-                local_voice.speak(match.group(1).strip())
-                sentence_buffer = phrase[match.end():].lstrip()
-                word_count = len(sentence_buffer.split()) if sentence_buffer else 0
-                continue
+                full_sentence = match.group(1).strip()
+                # NEW: Only speak if the sentence is long enough OR we are forcing it
+                # This stops her from saying "I." then "Am." then "Friday."
+                if len(full_sentence.split()) >= 3 or force:
+                    local_voice.speak(full_sentence)
+                    sentence_buffer = phrase[match.end():].lstrip()
+                    word_count = len(sentence_buffer.split()) if sentence_buffer else 0
+                    continue
+                else: break # Wait for more words to attach to this punctuation
 
-            if word_count >= 20:
+            if word_count >= 20: # Fallback for very long thoughts
                 local_voice.speak(phrase)
                 sentence_buffer = ""
                 word_count = 0
                 return
+            return
 
             if force:
                 if not phrase.endswith(sentence_endings):

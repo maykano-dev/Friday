@@ -17,47 +17,63 @@ from typing import List, Optional
 _CHROMA_CLIENT = None
 _CHROMA_COLLECTION = None
 
+
+# Force-alias at the top to prevent import race conditions
+def add_memory(text: str): return store_memory(text)
+
+
 def _get_chroma_collection():
     global _CHROMA_CLIENT, _CHROMA_COLLECTION
     if _CHROMA_CLIENT is None:
         try:
             import chromadb
-            db_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chroma_db")
+            db_path = os.path.join(os.path.dirname(
+                os.path.abspath(__file__)), "chroma_db")
             os.makedirs(db_path, exist_ok=True)
             _CHROMA_CLIENT = chromadb.PersistentClient(path=db_path)
-            _CHROMA_COLLECTION = _CHROMA_CLIENT.get_or_create_collection(name="semantic_vault")
+            _CHROMA_COLLECTION = _CHROMA_CLIENT.get_or_create_collection(
+                name="semantic_vault")
         except Exception as e:
             print(f"[Memory Vault] Chroma DB init failed: {e}")
     return _CHROMA_COLLECTION
 
+
 def index_data(content: str, type_meta: str) -> None:
-    if not str(content).strip(): return
+    if not str(content).strip():
+        return
     col = _get_chroma_collection()
     if col:
         import uuid
         try:
             col.add(
                 documents=[str(content)],
-                metadatas=[{"type": type_meta, "timestamp": datetime.utcnow().isoformat(timespec="seconds")}],
+                metadatas=[{"type": type_meta, "timestamp": datetime.utcnow(
+                ).isoformat(timespec="seconds")}],
                 ids=[str(uuid.uuid4())]
             )
         except Exception as e:
             print(f"[Memory Vault] Chroma index error: {e}")
 
+
 def semantic_search(query: str, n_results: int = 3) -> List[str]:
-    if not query.strip(): return []
+    if not query.strip():
+        return []
     col = _get_chroma_collection()
     if col:
         try:
-            if col.count() == 0: return []
+            if col.count() == 0:
+                return []
             res = col.query(query_texts=[query], n_results=n_results)
             docs = res.get('documents', [[]])
-            if docs: return docs[0]
+            if docs:
+                return docs[0]
         except Exception as e:
             print(f"[Memory Vault] Chroma search error: {e}")
     return []
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "friday_brain.db")
+
+DB_PATH = os.path.join(os.path.dirname(
+    os.path.abspath(__file__)), "friday_brain.db")
 
 MAX_KEYWORDS = 3
 MIN_KEYWORD_LEN = 3
@@ -95,14 +111,16 @@ def _extract_keywords(text: str, max_n: int = MAX_KEYWORDS) -> List[str]:
         return []
 
     tokens = [t.lower() for t in _WORD_RE.findall(text)]
-    tokens = [t for t in tokens if len(t) >= MIN_KEYWORD_LEN and t not in _STOPWORDS]
+    tokens = [t for t in tokens if len(
+        t) >= MIN_KEYWORD_LEN and t not in _STOPWORDS]
     if not tokens:
         return []
 
     counts = Counter(tokens)
     # Sort by frequency desc, then by length desc (longer words tend to be
     # more specific), then alphabetically for determinism.
-    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], -len(kv[0]), kv[0]))
+    ranked = sorted(
+        counts.items(), key=lambda kv: (-kv[1], -len(kv[0]), kv[0]))
     return [w for w, _ in ranked[:max_n]]
 
 
@@ -187,16 +205,12 @@ def store_memory(text: str) -> bool:
         return False
 
 
-# Alias to prevent external module tracebacks
-add_memory = store_memory
-
-
 def get_recent_memories(limit: int = 10) -> List[str]:
     """Return the most recently stored raw memory strings for offline synthesis."""
     try:
         with _connect() as conn:
             rows = conn.execute(
-                "SELECT memory_text FROM memories ORDER BY id DESC LIMIT ?", 
+                "SELECT memory_text FROM memories ORDER BY id DESC LIMIT ?",
                 (limit,)
             ).fetchall()
             return [r["memory_text"] for r in rows]

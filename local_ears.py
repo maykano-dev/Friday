@@ -100,12 +100,16 @@ class ContinuousListener:
     SILENCE_TIMEOUT = 1.2       # seconds of silence to end an utterance
     PRE_BUFFER = 0.5            # ignore first 0.5s (pop filter)
     MIN_SPEECH_DURATION = 1.0   # require clearer speech before we treat it as intentional
-    VAD_THRESHOLD = 0.90        # less sensitive to room noise and Friday's own voice
+    
+    # NEW: Dynamic Sensitivity
+    THRESHOLD_IDLE = 0.88
+    THRESHOLD_TALKING = 0.98
 
     def __init__(self):
         self.result_queue: Queue = Queue()
         self._thread: threading.Thread | None = None
         self._running = False
+        self._boot_time = time.time()  # Track startup
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -151,17 +155,20 @@ class ContinuousListener:
                 tensor = torch.from_numpy(pcm.astype(np.float32) / 32768.0)
                 confidence = vad(tensor, self.RATE).item()
 
-                if confidence > self.VAD_THRESHOLD:
+                # NEW: Calculate Dynamic Threshold
+                current_threshold = self.THRESHOLD_TALKING if getattr(state.is_talking, 'value', False) else self.THRESHOLD_IDLE
+                
+                if confidence > current_threshold:
                     vocalizing_accum += self.CHUNK / self.RATE
 
                     if vocalizing_accum >= self.PRE_BUFFER:
                         if not has_started:
                             has_started = True
                             # ── KILL-SWITCH: interrupt Friday if she's talking ──
-                            if getattr(state.is_talking, 'value', False):
+                            # NEW: Only interrupt if we are past the 4-second boot window
+                            if getattr(state.is_talking, 'value', False) and (time.time() - self._boot_time > 4.0):
                                 local_voice.interrupt()
-                                print(
-                                    "[Ear] Interrupted Friday — user is speaking.")
+                                print("[Ear] Interrupted Friday — user is speaking.")
 
                         speech_duration += self.CHUNK / self.RATE
                         silence_duration = 0.0

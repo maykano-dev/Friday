@@ -66,7 +66,8 @@ def run_friday():
         keyboard.add_hotkey("ctrl+alt+v", _inject_clipboard)
         print("[System: Global Clipboard listener active (Ctrl+Alt+V)]")
     except ImportError:
-        print("[System WARNING: 'keyboard' module not installed. Global Hotkey disabled.]")
+        print(
+            "[System WARNING: 'keyboard' module not installed. Global Hotkey disabled.]")
 
     print("\n[System: Booting Apex Friday Core...]")
 
