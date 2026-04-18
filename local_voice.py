@@ -64,7 +64,9 @@ threading.Thread(target=_warmup, daemon=True).start()
 
 # ── Renderer Thread ─────────────────────────────────────────────────────────
 def _renderer_worker() -> None:
-    idx = 0
+    """Renders text to in-memory audio (BytesIO) via Edge-TTS streaming."""
+    from io import BytesIO
+
     while True:
         try:
             text = _text_queue.get()
@@ -80,12 +82,15 @@ def _renderer_worker() -> None:
                 _text_queue.task_done()
                 continue
 
-            mp3_path = os.path.join(_TTS_DIR, f"_tts_chunk_{idx % 10}.mp3")
-            idx += 1
-
             try:
+                # Stream audio chunks directly into memory — no disk I/O
+                buf = BytesIO()
                 comm = edge_tts.Communicate(text, VOICE, rate=RATE, pitch=PITCH)
-                asyncio.run(comm.save(mp3_path))
+                for chunk in asyncio.run(_collect_audio(comm)):
+                    if _interrupted.is_set():
+                        break
+                    buf.write(chunk)
+                buf.seek(0)
             except Exception as e:
                 print(f"[Friday TTS] render error: {e}")
                 _text_queue.task_done()
@@ -95,11 +100,20 @@ def _renderer_worker() -> None:
                 _text_queue.task_done()
                 continue
 
-            _audio_queue.put(mp3_path)
+            _audio_queue.put(buf)
             _text_queue.task_done()
 
         except Exception as e:
             print(f"[Friday TTS] renderer crash: {e}")
+
+
+async def _collect_audio(comm) -> list[bytes]:
+    """Collect raw audio bytes from the Edge-TTS stream."""
+    chunks = []
+    async for chunk in comm.stream():
+        if chunk["type"] == "audio":
+            chunks.append(chunk["data"])
+    return chunks
 
 
 # ── Player Thread (Dual-Channel Pre-loading) ────────────────────────────────
@@ -114,8 +128,8 @@ def _player_worker() -> None:
 
     while True:
         try:
-            mp3_path = _audio_queue.get()
-            if mp3_path is None:
+            audio_buf = _audio_queue.get()
+            if audio_buf is None:
                 break
 
             if _interrupted.is_set():
@@ -123,7 +137,7 @@ def _player_worker() -> None:
                 continue
 
             try:
-                sound = pygame.mixer.Sound(mp3_path)
+                sound = pygame.mixer.Sound(audio_buf)
                 ch = channels[current_ch % 2]
 
                 # Wait for previous channel to finish (if any)

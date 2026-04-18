@@ -263,15 +263,25 @@ def generate_response(user_text: str) -> str:
         sentence_buffer += chunk
         word_count += len(chunk.split())
 
-        # Yield on SENTENCE-ENDING punctuation or ellipsis or double newline
-        is_sentence_end = any(p in chunk for p in [".", "?", "!", "\n\n"])
-        is_ellipsis = "..." in sentence_buffer
+        # Use regex to detect complete sentences in the buffer
+        # Split on sentence-ending punctuation followed by space or end-of-string
+        _SENTENCE_RE = re.compile(r'(?<=[.!?])\s+|(?<=[.!?])$|\n\n')
+        parts = _SENTENCE_RE.split(sentence_buffer)
 
-        if is_sentence_end or is_ellipsis or word_count >= 15:
-            _flush_buffer()
+        if len(parts) > 1 or word_count >= 15:
+            # We have at least one complete sentence (or hit the overflow)
+            # Speak all complete parts, keep the trailing incomplete fragment
+            for part in parts[:-1]:
+                p = part.strip()
+                if p:
+                    local_voice.speak(p)
+            sentence_buffer = parts[-1] if parts[-1] else ""
+            word_count = len(sentence_buffer.split()) if sentence_buffer else 0
 
     # Flush any remaining text
-    _flush_buffer()
+    remainder = sentence_buffer.strip()
+    if remainder:
+        local_voice.speak(remainder)
 
     reply = _EXECUTE_PATTERN.sub("", reply_accum).strip()
     if not reply:
