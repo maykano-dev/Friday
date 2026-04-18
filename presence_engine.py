@@ -1,9 +1,11 @@
 import pygame
 import os
 
+
 class PresenceEngine:
     def __init__(self):
-        self.channel = pygame.mixer.Channel(7)  # Reserve Channel 7 for ambience
+        self.channel = pygame.mixer.Channel(
+            7)  # Reserve Channel 7 for ambience
         self.is_ambient = False
 
     def enter_ambient_mode(self, sound_type="rain"):

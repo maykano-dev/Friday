@@ -82,6 +82,10 @@ class ActionExecutor:
                 self._web_scrape(payload)
             elif action == "web_research":
                 self._web_research(payload)
+            elif action == "open_url":
+                self._open_url(payload)
+            elif action == "web_search":
+                self._web_search(payload)
             elif action == "media_control":
                 self.media_control(payload)
             elif action == "ambient_mode":
@@ -476,6 +480,48 @@ Return purely valid JSON without markdown tags."""
 
         import threading
         threading.Thread(target=_research_thread, daemon=True).start()
+
+    @staticmethod
+    def _open_url(payload: Dict[str, Any]) -> None:
+        url = payload.get("url")
+        if not isinstance(url, str) or not url.strip():
+            print(
+                f"[Friday Action] open_url FAILED: missing or empty 'url' (payload={payload!r})")
+            ActionExecutor._speak_confirmation(
+                "I could not open the URL because it was missing or invalid.")
+            return
+
+        import webbrowser
+        try:
+            webbrowser.open(url)
+            ActionExecutor._speak_confirmation("Opened the requested URL.")
+        except Exception as e:
+            print(f"[Friday Action] open_url failed: {e}")
+            ActionExecutor._speak_confirmation(
+                "I failed to open the URL.")
+
+    @staticmethod
+    def _web_search(payload: Dict[str, Any]) -> None:
+        query = payload.get("query")
+        if not isinstance(query, str) or not query.strip():
+            print(
+                f"[Friday Action] web_search FAILED: missing or empty 'query' (payload={payload!r})")
+            ActionExecutor._speak_confirmation(
+                "I could not perform the search because the query was missing.")
+            return
+
+        from urllib.parse import quote_plus
+        import webbrowser
+
+        search_url = f"https://www.google.com/search?q={quote_plus(query)}"
+        try:
+            webbrowser.open(search_url)
+            ActionExecutor._speak_confirmation(
+                f"Searched the web for {query}.")
+        except Exception as e:
+            print(f"[Friday Action] web_search failed: {e}")
+            ActionExecutor._speak_confirmation(
+                "I failed to open the web search.")
 
     @classmethod
     def process_multimodal_input(cls, file_path: str) -> None:

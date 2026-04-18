@@ -32,6 +32,16 @@ class WebResultCard(ContextCard):
         self.favicon_surf = None
         self._fetch_favicon()
 
+    def to_dict(self):
+        """Convert web result card to a serializable dictionary."""
+        return {
+            "card_type": self.card_type,
+            "content": self.content,
+            "label": self.label,
+            "url": self.url,
+            "status": self.status,
+        }
+
     def _fetch_favicon(self):
         import urllib.parse
         parsed = urllib.parse.urlparse(self.url)
@@ -167,6 +177,16 @@ class NeuralVisualizer:
         screen = pygame.display.set_mode(
             (self.width, self.height), pygame.RESIZABLE)
         pygame.display.set_caption("Friday Neural Core")
+
+        # ENABLE DRAG AND DROP
+        try:
+            import ctypes
+            hwnd = pygame.display.get_wm_info()["window"]
+            ctypes.windll.shell32.DragAcceptFiles(hwnd, True)
+            print("[UI] Drag and drop enabled")
+        except Exception as e:
+            print(f"[UI] Could not enable drag and drop: {e}")
+
         clock = pygame.time.Clock()
 
         # Force Windows Always On Top seamlessly
@@ -204,20 +224,29 @@ class NeuralVisualizer:
                     screen = pygame.display.set_mode(
                         (self.width, self.height), pygame.RESIZABLE)
                 # handle older pygame bindings safely
-                elif event.type == getattr(pygame, "DROPBEGIN", 4104):
-                    self.target_wing_open_ratio = 1.0
-                    self.hover_active = True
-                elif event.type == getattr(pygame, "DROPCOMPLETE", 4105):
-                    self.hover_active = False
-                    # Only close if we didn't actually lock a file in
-                    if not self.context_cards:
-                        self.target_wing_open_ratio = 0.0
                 elif event.type == pygame.DROPFILE:
+                    print(f"[UI] File dropped: {event.file}")
                     self.target_wing_open_ratio = 1.0
                     self.hover_active = False
-                    import action_engine
-                    action_engine.ActionExecutor.process_multimodal_input(
-                        event.file)
+                    try:
+                        import action_engine
+                        action_engine.ActionExecutor.process_multimodal_input(
+                            event.file)
+                        print(
+                            f"[UI] Successfully processed dropped file: {event.file}")
+                    except Exception as e:
+                        print(f"[UI] Error processing dropped file: {e}")
+                elif event.type == getattr(pygame, "DROPTEXT", 4096):
+                    print(f"[UI] Text dropped: {event.text[:100]}")
+                    self.target_wing_open_ratio = 1.0
+                    self.hover_active = False
+                    self.context_cards.append(ContextCard(
+                        "TEXT", event.text, label="Dropped Text"))
+                    try:
+                        import memory_vault
+                        memory_vault.index_data(event.text, "dropped_text")
+                    except Exception:
+                        pass
                 elif event.type == MANUAL_INGEST_CMD:
                     self.target_wing_open_ratio = 1.0
                     self.sphere_pulse_overclock = 2.0

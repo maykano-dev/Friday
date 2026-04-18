@@ -1,11 +1,7 @@
 """Friday TTS — Edge-TTS with dual-channel pre-loading and zero-gap playback.
 
-Architecture:
-  1. RENDERER thread: pulls text → calls Edge-TTS → pushes .mp3 path.
-  2. PLAYER thread: pre-loads the NEXT .mp3 into a secondary pygame.mixer.Sound
-     while the current one is still playing, achieving zero gap between segments.
-  3. threading.Event provides atomic kill-switch.
-  4. Voice is tuned: +5% rate (alert), -2Hz pitch (body/resonance).
+Enhancements:
+- Aggressive interrupt with full queue flushing
 """
 
 import os
@@ -142,11 +138,7 @@ async def _collect_audio(comm) -> list[bytes]:
 
 # ── Player Thread (Dual-Channel Pre-loading) ────────────────────────────────
 def _player_worker() -> None:
-    """Plays segments back-to-back with zero gap.
-
-    Uses pygame.mixer.Sound on alternating channels so the next segment
-    is pre-loaded into memory while the current one is still playing.
-    """
+    """Plays segments back-to-back with zero gap."""
     channels = [pygame.mixer.Channel(0), pygame.mixer.Channel(1)]
     current_ch = 0
 
@@ -167,24 +159,23 @@ def _player_worker() -> None:
                 sound = pygame.mixer.Sound(audio_buf)
                 ch = channels[current_ch % 2]
 
-                # Wait for previous channel to finish (if any)
+                # Wait for previous channel to finish
                 while ch.get_busy():
                     if _interrupted.is_set():
                         ch.stop()
                         break
-                    pygame.time.wait(5)
+                    pygame.time.wait(10)
 
                 if not _interrupted.is_set():
                     ch.play(sound)
-                    _sync_talking_state(channels)
                     current_ch += 1
 
-                    # Block until this sound finishes (or interrupted)
+                    # Wait for THIS sound to finish
                     while ch.get_busy():
                         if _interrupted.is_set():
                             ch.stop()
                             break
-                        pygame.time.wait(5)
+                        pygame.time.wait(10)
 
             except Exception as e:
                 print(f"[Friday TTS] playback error: {e}")
@@ -219,24 +210,39 @@ _ensure_workers()
 # ── Public API ──────────────────────────────────────────────────────────────
 
 def interrupt() -> None:
-    """Immediately silence Friday, flush all queues."""
+    """Immediately silence Friday, flush all queues aggressively."""
     _interrupted.set()
 
-    # Stop all mixer channels
+    # Stop all mixer channels — VIOLENT SILENCE
     try:
         pygame.mixer.stop()
     except Exception:
         pass
 
-    for q in (_text_queue, _audio_queue):
-        while not q.empty():
-            try:
-                q.get_nowait()
-                q.task_done()
-            except Empty:
-                break
+    try:
+        pygame.mixer.music.stop()
+    except Exception:
+        pass
+
+    # Aggressively drain both queues so she doesn't resume old sentences
+    # Clear text queue (sentences waiting to be rendered)
+    while True:
+        try:
+            _text_queue.get_nowait()
+            _text_queue.task_done()
+        except Empty:
+            break
+
+    # Clear audio queue (rendered audio waiting to be played)
+    while True:
+        try:
+            _audio_queue.get_nowait()
+            _audio_queue.task_done()
+        except Empty:
+            break
 
     state.set_talking(False)
+    print("[Voice] Interrupted — audio killed, queues flushed.")
 
 
 def speak(text: str) -> None:

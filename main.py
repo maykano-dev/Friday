@@ -20,8 +20,16 @@ import local_voice
 import local_ears
 from ui_engine import ContextCard, NeuralVisualizer, WebResultCard
 from proactive_engine import ProactiveEngine
+from session_manager import get_session_manager
+from agent_orchestrator import get_orchestrator
+from output_router import get_router
+from secure_sandbox import get_sandbox
 
 ui = None
+session_mgr = None
+router = None
+orchestrator = None
+sandbox = None
 
 
 def get_greeting() -> str:
@@ -31,13 +39,19 @@ def get_greeting() -> str:
 
 
 def _process_utterance(text: str, proactive) -> None:
-    """Handle a single user utterance — runs on its own thread so the
-    listener is never blocked."""
+    """Handle a single user utterance with immediate visual feedback."""
     global ui
 
+    # IMMEDIATE FEEDBACK
     if ui:
         ui.set_user_text(text)
+        ui.set_state("LISTENING")
+
+    time.sleep(0.05)  # Let UI update
+
+    if ui:
         ui.set_state("THINKING")
+        ui.set_subtitle_text("...")
 
     if proactive:
         proactive.notify_user_spoke()
@@ -45,7 +59,6 @@ def _process_utterance(text: str, proactive) -> None:
     friday_reply = friday_core.generate_response(text)
     print(f"Friday: {friday_reply}")
 
-    # Brief cooldown so the mic doesn't catch her echo
     time.sleep(0.8)
     if ui:
         ui.set_subtitle_text("")
@@ -54,7 +67,7 @@ def _process_utterance(text: str, proactive) -> None:
 
 
 def run_friday():
-    global ui
+    global ui, session_mgr, router, sandbox, orchestrator
 
     # ── Keyboard Hotkey ─────────────────────────────────────────────────
     try:
@@ -83,21 +96,44 @@ def run_friday():
                 saved_cards = json.load(f)
             for c in saved_cards:
                 if c.get("card_type") == "WEB":
-                    ui.context_cards.append(WebResultCard(c.get("url", ""), status="complete"))
+                    ui.context_cards.append(WebResultCard(
+                        c.get("url", ""), status="complete"))
                 else:
-                    ui.context_cards.append(ContextCard(c.get("card_type", "TEXT"), c.get("content", ""), label=c.get("label", "")))
+                    ui.context_cards.append(ContextCard(
+                        c.get("card_type", "TEXT"), c.get("content", ""), label=c.get("label", "")))
             print("[System] Memory state resumed. Context Wing restored.")
         except Exception as e:
             print(f"[System Error] Failed to resume state: {e}")
 
+    # ── 1.5. Initialize new modules ──────────────────────────────────────
+    session_mgr = get_session_manager()
+    router = get_router()
+    sandbox = get_sandbox()
+
+    # Setup orchestrator with LLM callback
+    def llm_callback(system_prompt: str, user_prompt: str) -> str:
+        return friday_core.generate_response(f"{system_prompt}\n\n{user_prompt}")
+
+    orchestrator = get_orchestrator(llm_callback)
+    orchestrator.start()
+
     # ── 2. Startup Greeting ─────────────────────────────────────────────
     ui.set_state("THINKING")
     ui.set_subtitle_text("")
-    greeting = get_greeting()
-    print(f"Friday: {greeting}")
-    ui.set_state("TALKING")
-    ui.set_subtitle_text(greeting)
-    local_voice.speak(greeting)
+
+    # Check for session resume
+    resume_greeting = session_mgr.get_resume_greeting() if session_mgr else None
+    if resume_greeting:
+        print(f"Friday: {resume_greeting}")
+        ui.set_state("TALKING")
+        ui.set_subtitle_text(resume_greeting)
+        local_voice.speak(resume_greeting)
+    else:
+        greeting = get_greeting()
+        print(f"Friday: {greeting}")
+        ui.set_state("TALKING")
+        ui.set_subtitle_text(greeting)
+        local_voice.speak(greeting)
 
     # ── 3. Boot background daemons ──────────────────────────────────────
     proactive = ProactiveEngine(ui=ui, interval_seconds=1800)
