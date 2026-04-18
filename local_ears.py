@@ -5,7 +5,7 @@ Architecture:
   When VAD detects human speech:
     1. If Friday is currently talking → fires interrupt() kill-switch instantly.
     2. Records until 1.2s of silence, then checks the hallucination guard.
-    3. If audio < 0.6s of actual speech → discards (hallucination/noise).
+    3. If audio < 0.8s of actual speech → discards (hallucination/noise).
     4. Otherwise → ships the .wav to Groq Whisper API and pushes the
        transcribed text into a result_queue for main.py to consume.
 """
@@ -37,6 +37,7 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 # ── VAD Lazy Loader ─────────────────────────────────────────────────────────
 _vad_model = None
+
 
 def _get_vad():
     global _vad_model
@@ -78,7 +79,8 @@ def _transcribe_wav(wav_path: str) -> str:
         if resp.status_code == 200:
             return resp.json().get("text", "").strip()
         else:
-            print(f"[Ear] Groq API error {resp.status_code}: {resp.text[:200]}")
+            print(
+                f"[Ear] Groq API error {resp.status_code}: {resp.text[:200]}")
             return ""
     except Exception as e:
         print(f"[Ear] transcription error: {e}")
@@ -158,7 +160,8 @@ class ContinuousListener:
                             # ── KILL-SWITCH: interrupt Friday if she's talking ──
                             if getattr(state.is_talking, 'value', False):
                                 local_voice.interrupt()
-                                print("[Ear] Interrupted Friday — user is speaking.")
+                                print(
+                                    "[Ear] Interrupted Friday — user is speaking.")
 
                         speech_duration += self.CHUNK / self.RATE
                         silence_duration = 0.0
@@ -209,7 +212,7 @@ class ContinuousListener:
                 "the end", "the end.", "subtitle", "subtitles",
                 "subscribe", "like and subscribe",
                 "silence", "...", "…",
-                "\u0a67", "\u0a67 \u0a67 \u0a67",  # Punjabi digit hallucinations
+                "੧", "੧ ੧ ੧", "\u0a67", "\u0a67 \u0a67 \u0a67",
                 "you.", "i", "um", "hmm", "uh",
             }
             if text.lower().strip().rstrip(".!?,") in HALLUCINATIONS:
@@ -234,6 +237,7 @@ _TTS_DIR = os.path.dirname(os.path.abspath(__file__))
 # Legacy compatibility — old code that calls local_ears.listen_and_transcribe()
 # will still work, but the preferred interface is ContinuousListener.
 _singleton = None
+
 
 def get_listener() -> ContinuousListener:
     global _singleton

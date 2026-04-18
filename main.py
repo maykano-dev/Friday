@@ -11,7 +11,6 @@ Architecture:
 
 import time
 import threading
-from datetime import datetime
 from queue import Empty
 
 import friday_core
@@ -24,13 +23,28 @@ ui = None
 
 
 def get_greeting() -> str:
+    """Ask Friday's brain to generate a unique greeting based on the time."""
+    from datetime import datetime
+
     hour = datetime.now().hour
+
+    # Determine the time of day for context
     if hour < 12:
-        return "Good morning, sir. All systems are online."
+        period = "morning"
     elif hour < 18:
-        return "Good afternoon, sir. All systems are online."
+        period = "afternoon"
     else:
-        return "Good evening, sir. Core systems are online and ready."
+        period = "evening"
+
+    # Send a hidden 'System' prompt to the cloud LLM
+    prompt = (
+        f"SYSTEM_BOOT_SEQUENCE: It is the {period}. "
+        "Give me a unique, witty, and concise one-sentence greeting for Awal. "
+        "Do not use action tags."
+    )
+
+    # Generate the response using the existing core logic
+    return friday_core.generate_response(prompt)
 
 
 def _process_utterance(text: str, proactive) -> None:
@@ -79,7 +93,9 @@ def run_friday():
     ui = NeuralVisualizer()
     ui.start()
 
-    # ── 2. Instant Greeting ─────────────────────────────────────────────
+    # ── 2. Dynamic Greeting ─────────────────────────────────────────────
+    ui.set_state("THINKING")
+    ui.set_subtitle_text("")
     greeting = get_greeting()
     print(f"Friday: {greeting}")
     ui.set_state("TALKING")

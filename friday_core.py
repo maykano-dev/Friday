@@ -74,6 +74,13 @@ VOICE_INGEST_TRIGGERS = (
     "what is this",
 )
 
+SYSTEM_BOOT_TRIGGER = "SYSTEM_BOOT_SEQUENCE:"
+SYSTEM_TRIGGER_PROMPT = (
+    "The next message is an internal system trigger, not a normal user chat turn. "
+    "Treat it as hidden orchestration context, respond with only the requested text, "
+    "and do not use action tags."
+)
+
 # Rolling short-term memory: only user/assistant turns live here.
 # The system prompt is prepended fresh on every call, so it never gets evicted.
 _history: Deque[Dict[str, str]] = deque(maxlen=MAX_MESSAGES)
@@ -94,11 +101,52 @@ def _extract_save_payload(user_text: str) -> Optional[str]:
     return None
 
 
+def _is_system_trigger(user_text: str) -> bool:
+    """Return True when the prompt is an internal orchestration trigger."""
+    return user_text.lstrip().upper().startswith(SYSTEM_BOOT_TRIGGER)
+
+
+def _build_system_trigger_messages(user_text: str) -> List[Dict[str, str]]:
+    """Build a minimal hidden prompt without chat or memory side effects."""
+    return [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": SYSTEM_TRIGGER_PROMPT},
+        {"role": "user", "content": user_text},
+    ]
+
+
+def _post_groq(payload: Dict[str, Any], *, stream: bool) -> requests.Response | str:
+    """Send a request to Groq and normalize transport-layer errors."""
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        resp = requests.post(
+            GROQ_URL,
+            json=payload,
+            headers=headers,
+            timeout=REQUEST_TIMEOUT,
+            stream=stream,
+        )
+        resp.raise_for_status()
+        return resp
+    except requests.exceptions.ConnectionError:
+        return "Can't reach the Groq API. Check your internet connection."
+    except requests.exceptions.Timeout:
+        return "Groq took too long to respond. Please try again."
+    except requests.exceptions.HTTPError as e:
+        return f"Groq API error: {e.response.status_code} — {e.response.text[:200]}."
+    except requests.exceptions.RequestException as e:
+        return f"Network error: {e}."
+
+
 def _build_messages(
     user_text: str,
     relevant_memories: Optional[List[str]] = None,
 ) -> List[Dict[str, str]]:
-    """Assemble the full message list sent to Ollama.
+    """Assemble the full message list sent to Groq Cloud API.
 
     `relevant_memories`, if provided, are injected as additional system-role
     notes right after the main system prompt so the model treats them as
@@ -116,17 +164,18 @@ def _build_messages(
     import main
     context_files_text = ""
     image_data_list = []
-    
+
     if hasattr(main, "ui") and main.ui:
         for card in main.ui.context_cards:
             if card.card_type == "IMAGE":
                 image_data_list.append(card.content)
             else:
-                context_files_text += f"\n\n--- FILE CONTEXT ---\n{card.content[:2000]}\n" # Cap arbitrarily to avoid buffer overflow
-                
+                # Cap arbitrarily to avoid buffer overflow
+                context_files_text += f"\n\n--- FILE CONTEXT ---\n{card.content[:2000]}\n"
+
     if context_files_text:
         sys_text += f"\n\nThe user has loaded the following files into your Context Wing:{context_files_text}"
-        
+
     if image_data_list:
         sys_text += "\n\nOBSERVER MODE ACTIVE: The user has shown you visual data. Observe it carefully."
 
@@ -136,9 +185,11 @@ def _build_messages(
     recent = memory_vault.get_recent_memories(limit=10)
     for m in recent:
         if m.startswith("User:"):
-            messages.append({"role": "user", "content": m.replace("User: ", "", 1)})
+            messages.append(
+                {"role": "user", "content": m.replace("User: ", "", 1)})
         elif m.startswith("Friday:"):
-            messages.append({"role": "assistant", "content": m.replace("Friday: ", "", 1)})
+            messages.append(
+                {"role": "assistant", "content": m.replace("Friday: ", "", 1)})
 
     # Chroma Context Injection
     semantic_matches = memory_vault.semantic_search(user_text)
@@ -149,14 +200,14 @@ def _build_messages(
     user_msg = {"role": "user", "content": user_text}
     if image_data_list:
         user_msg["images"] = image_data_list
-        
+
     messages.append(user_msg)
-    
+
     return messages
 
 
 def generate_response(user_text: str) -> str:
-    """Send `user_text` to the local Ollama server and return the reply string.
+    """Send `user_text` to Groq Cloud API and return the reply string.
 
     Maintains a rolling context window of the last 6 turns. Returns a
     human-readable error string if the server is unreachable or misbehaving,
@@ -165,13 +216,40 @@ def generate_response(user_text: str) -> str:
     if not user_text or not user_text.strip():
         return "I didn't catch that."
 
-    # Intercept explicit save commands and bypass the Ollama call entirely.
+    # Intercept explicit save commands and bypass the Groq call entirely.
     save_payload = _extract_save_payload(user_text)
     if save_payload is not None:
         if save_payload:
             memory_vault.store_memory(save_payload)
         return "Saved to memory, sir."
-        
+
+    # Hidden system triggers should not behave like normal conversation turns.
+    if _is_system_trigger(user_text):
+        if not GROQ_API_KEY:
+            return "GROQ_API_KEY is not set. Please add it to your .env file."
+
+        payload = {
+            "model": MODEL_NAME,
+            "messages": _build_system_trigger_messages(user_text),
+            "stream": False,
+            "temperature": 0.9,
+            "max_tokens": 80,
+        }
+
+        resp = _post_groq(payload, stream=False)
+        if isinstance(resp, str):
+            return resp
+
+        try:
+            data = resp.json()
+            reply = data.get("choices", [{}])[0].get(
+                "message", {}).get("content", "")
+        except ValueError:
+            return "Groq returned malformed JSON."
+
+        reply = _EXECUTE_PATTERN.sub("", reply).strip()
+        return reply or "Systems online."
+
     user_lower = user_text.lower().strip()
     for trigger in VOICE_INGEST_TRIGGERS:
         if trigger in user_lower:
@@ -180,7 +258,8 @@ def generate_response(user_text: str) -> str:
                 import time
                 from ui_engine import MANUAL_INGEST_CMD
                 pygame.event.post(pygame.event.Event(MANUAL_INGEST_CMD))
-                time.sleep(0.5) # Wait for ui_engine thread to naturally mount the payload
+                # Wait for ui_engine thread to naturally mount the payload
+                time.sleep(0.5)
             except:
                 pass
             break
@@ -194,7 +273,7 @@ def generate_response(user_text: str) -> str:
         relevant_memories = []
 
     messages = _build_messages(user_text, relevant_memories)
-    
+
     if not GROQ_API_KEY:
         return "GROQ_API_KEY is not set. Please add it to your .env file."
 
@@ -206,45 +285,35 @@ def generate_response(user_text: str) -> str:
         "max_tokens": 1024,
     }
 
-    headers = {
-        "Authorization": f"Bearer {GROQ_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    resp = _post_groq(payload, stream=True)
+    if isinstance(resp, str):
+        return resp
 
-    try:
-        resp = requests.post(GROQ_URL, json=payload, headers=headers,
-                             timeout=REQUEST_TIMEOUT, stream=True)
-        resp.raise_for_status()
-    except requests.exceptions.ConnectionError:
-        return "Can't reach the Groq API. Check your internet connection."
-    except requests.exceptions.Timeout:
-        return "Groq took too long to respond. Please try again."
-    except requests.exceptions.HTTPError as e:
-        return f"Groq API error: {e.response.status_code} — {e.response.text[:200]}."
-    except requests.exceptions.RequestException as e:
-        return f"Network error: {e}."
-
-    import json, local_voice, main
+    import json
+    import local_voice
+    import main
 
     reply_accum = ""
     sentence_buffer = ""
     word_count = 0
     in_execute_block = False
     action_block = ""
-    
-    if hasattr(main, "ui") and main.ui: main.ui.set_state("TALKING")
+
+    if hasattr(main, "ui") and main.ui:
+        main.ui.set_state("TALKING")
 
     def _flush_buffer():
         """Send the buffered sentence to the voice engine."""
         nonlocal sentence_buffer, word_count
         phrase = sentence_buffer.strip()
-        if phrase:
+        if phrase and (len(phrase.split()) >= 3 or any(p in phrase for p in [".", "?", "!"])):
             local_voice.speak(phrase)
         sentence_buffer = ""
         word_count = 0
 
     for line in resp.iter_lines():
-        if not line: continue
+        if not line:
+            continue
         line_str = line.decode("utf-8")
 
         # Groq uses OpenAI SSE format: "data: {json}" or "data: [DONE]"
@@ -255,16 +324,19 @@ def generate_response(user_text: str) -> str:
 
         try:
             chunk_data = json.loads(line_str)
-            chunk = chunk_data.get("choices", [{}])[0].get("delta", {}).get("content", "")
-        except: continue
-        if not chunk: continue
-        
+            chunk = chunk_data.get("choices", [{}])[0].get(
+                "delta", {}).get("content", "")
+        except:
+            continue
+        if not chunk:
+            continue
+
         reply_accum += chunk
-        
+
         # Check execution parsing blocks
         if "<EXECUTE>" in reply_accum and not in_execute_block:
             in_execute_block = True
-            
+
         if in_execute_block:
             action_block += chunk
             if "</EXECUTE>" in action_block:
@@ -273,13 +345,16 @@ def generate_response(user_text: str) -> str:
                 if match:
                     json_payload = match.group(1).strip()
                     if json_payload:
-                        try: _action_executor.execute_payload(json_payload)
-                        except Exception as e: print(f"[Friday Action Err]: {e}")
+                        try:
+                            _action_executor.execute_payload(json_payload)
+                        except Exception as e:
+                            print(f"[Friday Action Err]: {e}")
             continue
 
         # Update subtitle live
         if hasattr(main, "ui") and main.ui:
-            main.ui.set_subtitle_text(reply_accum.replace("<EXECUTE>","").replace("</EXECUTE>",""))
+            main.ui.set_subtitle_text(reply_accum.replace(
+                "<EXECUTE>", "").replace("</EXECUTE>", ""))
 
         # Accumulate into sentence buffer
         sentence_buffer += chunk
@@ -302,9 +377,7 @@ def generate_response(user_text: str) -> str:
             word_count = len(sentence_buffer.split()) if sentence_buffer else 0
 
     # Flush any remaining text
-    remainder = sentence_buffer.strip()
-    if remainder:
-        local_voice.speak(remainder)
+    _flush_buffer()
 
     reply = _EXECUTE_PATTERN.sub("", reply_accum).strip()
     if not reply:
@@ -317,7 +390,6 @@ def generate_response(user_text: str) -> str:
         print(f"[Friday Core] failed to save to vault: {e}")
 
     return reply
-
 
 
 def reset_memory() -> None:
