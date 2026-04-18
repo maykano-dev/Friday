@@ -100,7 +100,8 @@ class ContinuousListener:
     SILENCE_TIMEOUT = 1.2       # seconds of silence to end an utterance
     PRE_BUFFER = 0.1            # ignore first 0.1s (pop filter)
     MIN_SPEECH_DURATION = 0.5   # require clearer speech before we treat it as intentional
-    VAD_THRESHOLD = 0.70        # LOWERED: Better for standard laptop mics
+    VAD_THRESHOLD = 0.65        # LOWERED: Much more sensitive to your voice
+
     def __init__(self, ui=None):
         self.ui = ui
         self.result_queue: Queue = Queue()
@@ -159,7 +160,8 @@ class ContinuousListener:
                         if not has_started:
                             has_started = True
                             # Signal UI to turn RED for listening
-                            if self.ui: self.ui.set_state("LISTENING")
+                            if self.ui:
+                                self.ui.set_state("LISTENING")
                             if getattr(state.is_talking, 'value', False):
                                 local_voice.interrupt()
                                 print(
