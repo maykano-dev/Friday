@@ -98,9 +98,9 @@ class ContinuousListener:
     CHANNELS = 1
     RATE = 16000
     SILENCE_TIMEOUT = 0.8       # seconds of silence to end an utterance
-    PRE_BUFFER = 0.1            # ignore first 0.1s (pop filter)
+    PRE_BUFFER = 0.5            # ignore first 0.5s (pop filter)
     MIN_SPEECH_DURATION = 0.5   # require clearer speech before we treat it as intentional
-    VAD_THRESHOLD = 0.60        # LOWERED: Much more sensitive to your voice
+    VAD_THRESHOLD = 0.85        # RAISED: Ignore own voice and background noise
 
     def __init__(self, ui=None):
         self.ui = ui
