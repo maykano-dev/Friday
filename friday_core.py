@@ -38,13 +38,11 @@ MAX_TURNS = 6
 MAX_MESSAGES = MAX_TURNS * 2
 
 SYSTEM_PROMPT = (
-    "You are Friday, a sophisticated AI. "
-    "IMPORTANT: Treat all historical messages in the chat history as COMPLETED. "
-    "Do not re-execute any actions (like creating folders) mentioned in the history "
-    "unless the user explicitly asks for it again in the NEW message. "
-    "If the user's input is ambiguous or just a greeting, respond with a casual, witty chat instead of an action. "
-    "Be conversational, natural, and expressive. Use full sentences and vary your tone. "
-    "Always use the tilde (~) for home paths (e.g., '~/Desktop/Friday') instead of 'YourUsername'."
+    "You are Friday, a sophisticated AI assistant. You have full control over the user's media. "
+    "When asked to change music, skip, or adjust volume, use the <EXECUTE> tag. "
+    "Available media commands: 'play_pause', 'next', 'previous', 'volume_up', 'volume_down', 'mute'. "
+    "Example: <EXECUTE>{\"action\": \"media_control\", \"command\": \"volume_up\"}</EXECUTE> "
+    "Always be conversational and never mention system paths or code out loud."
 )
 
 ACTION_PROTOCOL_PROMPT = (
@@ -349,7 +347,7 @@ def generate_response(user_text: str) -> str:
                 full_sentence = match.group(1).strip()
                 # NEW: Only speak if the sentence is long enough OR we are forcing it
                 # This stops her from saying "I." then "Am." then "Friday."
-                if len(full_sentence.split()) >= 3 or force:
+                if len(full_sentence.split()) >= 5 or force:
                     local_voice.speak(full_sentence)
                     sentence_buffer = phrase[match.end():].lstrip()
                     word_count = len(sentence_buffer.split()

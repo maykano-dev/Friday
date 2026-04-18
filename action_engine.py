@@ -15,6 +15,8 @@ import subprocess
 import threading
 from typing import Any, Dict, Optional
 
+import pyautogui
+
 
 SCRIPT_TIMEOUT_SECONDS = 120
 
@@ -80,6 +82,8 @@ class ActionExecutor:
                 self._web_scrape(payload)
             elif action == "web_research":
                 self._web_research(payload)
+            elif action == "media_control":
+                self.media_control(payload)
             else:
                 print(f"[Friday Action] unknown action: {action!r}")
         except Exception as e:
@@ -465,4 +469,28 @@ Return purely valid JSON without markdown tags."""
                 memory_vault.index_data(content, "dropped_file")
             except Exception:
                 main.ui.context_cards.append(ContextCard("TEXT", f"Binary File: {os.path.basename(file_path)}"))
+
+    @staticmethod
+    def media_control(payload: Dict[str, Any]) -> None:
+        command = payload.get("command", "").lower()
+        import local_voice  # Local import to avoid circular issues
+        
+        if command == "play_pause":
+            pyautogui.press("playpause")
+            local_voice.speak("Toggled playback.")
+        elif command == "next":
+            pyautogui.press("nexttrack")
+            local_voice.speak("Skipping to the next track.")
+        elif command == "previous":
+            pyautogui.press("prevtrack")
+            local_voice.speak("Going back.")
+        elif command == "volume_up":
+            for _ in range(5): pyautogui.press("volumeup")
+            local_voice.speak("Volume increased.")
+        elif command == "volume_down":
+            for _ in range(5): pyautogui.press("volumedown")
+            local_voice.speak("Volume decreased.")
+        elif command == "mute":
+            pyautogui.press("volumemute")
+            local_voice.speak("Audio muted.")
 
