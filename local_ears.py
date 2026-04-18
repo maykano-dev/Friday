@@ -98,9 +98,9 @@ class ContinuousListener:
     CHANNELS = 1
     RATE = 16000
     SILENCE_TIMEOUT = 0.8       # seconds of silence to end an utterance
-    PRE_BUFFER = 0.5            # ignore first 0.5s (pop filter)
+    PRE_BUFFER = 0.1            # ignore first 0.1s (pop filter)
     MIN_SPEECH_DURATION = 0.5   # require clearer speech before we treat it as intentional
-    VAD_THRESHOLD = 0.85        # RAISED: Ignore own voice and background noise
+    VAD_THRESHOLD = 0.75        # LOWERED: Better for consumer laptop microphones
 
     def __init__(self, ui=None):
         self.ui = ui
@@ -153,7 +153,8 @@ class ContinuousListener:
                 tensor = torch.from_numpy(pcm.astype(np.float32) / 32768.0)
                 confidence = vad(tensor, self.RATE).item()
 
-                if confidence > self.VAD_THRESHOLD:
+                current_threshold = 0.98 if getattr(state.is_talking, 'value', False) else self.VAD_THRESHOLD
+                if confidence > current_threshold:
                     vocalizing_accum += self.CHUNK / self.RATE
 
                     if vocalizing_accum >= self.PRE_BUFFER:
