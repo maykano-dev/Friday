@@ -165,6 +165,7 @@ class NeuralVisualizer:
 
         while self.running:
             # --- CRITICAL FIX: The Event Pump ---
+            pygame.event.pump()
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     self.running = False

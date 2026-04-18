@@ -24,6 +24,15 @@ class ActionExecutor:
     
     last_run_code_bug: Optional[str] = None
 
+    @staticmethod
+    def _speak_confirmation(message: str) -> None:
+        """Best-effort spoken confirmation after a successful action."""
+        try:
+            import local_voice
+            local_voice.speak(message)
+        except Exception as e:
+            print(f"[Friday Action] confirmation speak failed: {e}")
+
     def execute_payload(self, json_string: str) -> Optional[threading.Thread]:
         """Parse `json_string` and run the requested action in a daemon thread.
 
@@ -125,6 +134,7 @@ class ActionExecutor:
 
         if os.path.isdir(abs_path):
             print(f"[Friday Action] created directory: {abs_path}")
+            ActionExecutor._speak_confirmation("Directory created successfully.")
         else:
             print(f"[Friday Action] create_dir completed without raising but target is missing: {abs_path}")
 
@@ -147,6 +157,7 @@ class ActionExecutor:
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
         print(f"[Friday Action] wrote file: {path} ({len(content)} chars)")
+        ActionExecutor._speak_confirmation("File written.")
 
     @classmethod
     def _run_script(cls, payload: Dict[str, Any]) -> None:
@@ -274,6 +285,7 @@ class ActionExecutor:
             else:
                 subprocess.Popen(["open" if platform.system() == "Darwin" else "xdg-open", app_name])
             print(f"[Friday Action] started app: {app_name}")
+            cls._speak_confirmation("Application launched.")
         except Exception as e:
             print(f"[Friday Action] start_app failed: {e}")
 
@@ -298,6 +310,7 @@ class ActionExecutor:
                     import memory_vault
                     memory_vault.index_data(text[:10000], "web_scrape")
                     print(f"[Friday Action] Successfully scraped and indexed {url}")
+                    cls._speak_confirmation("Web scrape complete.")
             except Exception as e:
                 print(f"[Friday Action] web_scrape failed: {e}")
             finally:
@@ -395,6 +408,7 @@ Return purely valid JSON without markdown tags."""
                     browser.close()
                     if web_card:
                         web_card.status = "complete"
+                    cls._speak_confirmation("Research complete.")
                         
             except Exception as e:
                 print(f"[Friday Action] web_research failed: {e}")

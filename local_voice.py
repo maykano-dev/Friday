@@ -45,6 +45,19 @@ _renderer_thread: threading.Thread | None = None
 _player_thread:   threading.Thread | None = None
 
 
+def _sync_talking_state(channels=None) -> None:
+    """Reflect whether any queued or currently playing speech still exists."""
+    try:
+        if channels is None:
+            any_busy = pygame.mixer.get_busy() if pygame.mixer.get_init() else False
+        else:
+            any_busy = any(ch.get_busy() for ch in channels)
+    except Exception:
+        any_busy = False
+
+    state.set_talking(not _text_queue.empty() or not _audio_queue.empty() or any_busy)
+
+
 # ── Pre-connect ─────────────────────────────────────────────────────────────
 def _warmup() -> None:
     """Fire a silent request at boot so the Azure WebSocket is pre-cached."""
@@ -71,15 +84,19 @@ def _renderer_worker() -> None:
         try:
             text = _text_queue.get()
             if text is None:
+                _text_queue.task_done()
                 _audio_queue.put(None)
+                _sync_talking_state()
                 break
 
             if _interrupted.is_set():
                 _text_queue.task_done()
+                _sync_talking_state()
                 continue
 
             if edge_tts is None:
                 _text_queue.task_done()
+                _sync_talking_state()
                 continue
 
             try:
@@ -94,17 +111,21 @@ def _renderer_worker() -> None:
             except Exception as e:
                 print(f"[Friday TTS] render error: {e}")
                 _text_queue.task_done()
+                _sync_talking_state()
                 continue
 
             if _interrupted.is_set():
                 _text_queue.task_done()
+                _sync_talking_state()
                 continue
 
             _audio_queue.put(buf)
             _text_queue.task_done()
+            _sync_talking_state()
 
         except Exception as e:
             print(f"[Friday TTS] renderer crash: {e}")
+            _sync_talking_state()
 
 
 async def _collect_audio(comm) -> list[bytes]:
@@ -130,10 +151,13 @@ def _player_worker() -> None:
         try:
             audio_buf = _audio_queue.get()
             if audio_buf is None:
+                _audio_queue.task_done()
+                _sync_talking_state(channels)
                 break
 
             if _interrupted.is_set():
                 _audio_queue.task_done()
+                _sync_talking_state(channels)
                 continue
 
             try:
@@ -145,10 +169,11 @@ def _player_worker() -> None:
                     if _interrupted.is_set():
                         ch.stop()
                         break
-                    pygame.time.wait(10)
+                    pygame.time.wait(5)
 
                 if not _interrupted.is_set():
                     ch.play(sound)
+                    _sync_talking_state(channels)
                     current_ch += 1
 
                     # Block until this sound finishes (or interrupted)
@@ -156,20 +181,17 @@ def _player_worker() -> None:
                         if _interrupted.is_set():
                             ch.stop()
                             break
-                        pygame.time.wait(10)
+                        pygame.time.wait(5)
 
             except Exception as e:
                 print(f"[Friday TTS] playback error: {e}")
 
             _audio_queue.task_done()
-
-            if (_text_queue.empty() and _audio_queue.empty()
-                    and not any(c.get_busy() for c in channels)):
-                state.is_talking.value = False
+            _sync_talking_state(channels)
 
         except Exception as e:
             print(f"[Friday TTS] player crash: {e}")
-            state.is_talking.value = False
+            state.set_talking(False)
 
 
 # ── Thread Lifecycle ────────────────────────────────────────────────────────
@@ -205,7 +227,7 @@ def interrupt() -> None:
             except Empty:
                 break
 
-    state.is_talking.value = False
+    state.set_talking(False)
 
 
 def speak(text: str) -> None:
@@ -218,6 +240,7 @@ def speak(text: str) -> None:
         return
 
     _interrupted.clear()
-    state.is_talking.value = True
+    state.set_talking(True)
     _ensure_workers()
     _text_queue.put(str(text).strip())
+    _sync_talking_state()

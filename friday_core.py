@@ -38,7 +38,7 @@ MAX_TURNS = 6
 MAX_MESSAGES = MAX_TURNS * 2
 
 SYSTEM_PROMPT = (
-    "You are Friday, a highly capable general assistant. Your goal is to help any user with any task, from coding and writing to web research and PC management. Be concise, witty, and fast. Formulate your spoken response in exactly ONE short sentence. Always use <EXECUTE> tags for system actions like creating folders or opening apps."
+    "You are Friday, a highly capable general assistant. Your goal is to help any user with any task, from coding and writing to web research and PC management. Be concise, witty, and fast. Formulate your response naturally. Always use <EXECUTE> tags for system actions."
     "\n\n"
     "ACTION PROTOCOL: If the user asks you to create a folder or directory, "
     "append an action block at the VERY END of your reply formatted exactly like this:\n"
@@ -74,13 +74,6 @@ VOICE_INGEST_TRIGGERS = (
     "what is this",
 )
 
-SYSTEM_BOOT_TRIGGER = "SYSTEM_BOOT_SEQUENCE:"
-SYSTEM_TRIGGER_PROMPT = (
-    "The next message is an internal system trigger, not a normal user chat turn. "
-    "Treat it as hidden orchestration context, respond with only the requested text, "
-    "and do not use action tags."
-)
-
 # Rolling short-term memory: only user/assistant turns live here.
 # The system prompt is prepended fresh on every call, so it never gets evicted.
 _history: Deque[Dict[str, str]] = deque(maxlen=MAX_MESSAGES)
@@ -99,20 +92,6 @@ def _extract_save_payload(user_text: str) -> Optional[str]:
             payload = stripped[len(trigger):].strip()
             return payload
     return None
-
-
-def _is_system_trigger(user_text: str) -> bool:
-    """Return True when the prompt is an internal orchestration trigger."""
-    return user_text.lstrip().upper().startswith(SYSTEM_BOOT_TRIGGER)
-
-
-def _build_system_trigger_messages(user_text: str) -> List[Dict[str, str]]:
-    """Build a minimal hidden prompt without chat or memory side effects."""
-    return [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "system", "content": SYSTEM_TRIGGER_PROMPT},
-        {"role": "user", "content": user_text},
-    ]
 
 
 def _post_groq(payload: Dict[str, Any], *, stream: bool) -> requests.Response | str:
@@ -221,34 +200,7 @@ def generate_response(user_text: str) -> str:
     if save_payload is not None:
         if save_payload:
             memory_vault.store_memory(save_payload)
-        return "Saved to memory, sir."
-
-    # Hidden system triggers should not behave like normal conversation turns.
-    if _is_system_trigger(user_text):
-        if not GROQ_API_KEY:
-            return "GROQ_API_KEY is not set. Please add it to your .env file."
-
-        payload = {
-            "model": MODEL_NAME,
-            "messages": _build_system_trigger_messages(user_text),
-            "stream": False,
-            "temperature": 0.9,
-            "max_tokens": 80,
-        }
-
-        resp = _post_groq(payload, stream=False)
-        if isinstance(resp, str):
-            return resp
-
-        try:
-            data = resp.json()
-            reply = data.get("choices", [{}])[0].get(
-                "message", {}).get("content", "")
-        except ValueError:
-            return "Groq returned malformed JSON."
-
-        reply = _EXECUTE_PATTERN.sub("", reply).strip()
-        return reply or "Systems online."
+        return "Saved to memory."
 
     user_lower = user_text.lower().strip()
     for trigger in VOICE_INGEST_TRIGGERS:
@@ -298,18 +250,42 @@ def generate_response(user_text: str) -> str:
     word_count = 0
     in_execute_block = False
     action_block = ""
+    sentence_endings = (".", "!", "?")
+    sentence_pattern = re.compile(r"^(.+?[.!?])(?=\s|$)", re.DOTALL)
 
     if hasattr(main, "ui") and main.ui:
         main.ui.set_state("TALKING")
 
-    def _flush_buffer():
-        """Send the buffered sentence to the voice engine."""
+    def _flush_buffer(force: bool = False) -> None:
+        """Speak only complete thoughts so TTS keeps natural cadence."""
         nonlocal sentence_buffer, word_count
-        phrase = sentence_buffer.strip()
-        if phrase and (len(phrase.split()) >= 3 or any(p in phrase for p in [".", "?", "!"])):
-            local_voice.speak(phrase)
-        sentence_buffer = ""
-        word_count = 0
+        while True:
+            phrase = sentence_buffer.strip()
+            if not phrase:
+                sentence_buffer = ""
+                word_count = 0
+                return
+
+            match = sentence_pattern.match(phrase)
+            if match:
+                local_voice.speak(match.group(1).strip())
+                sentence_buffer = phrase[match.end():].lstrip()
+                word_count = len(sentence_buffer.split()) if sentence_buffer else 0
+                continue
+
+            if word_count >= 10:
+                local_voice.speak(phrase)
+                sentence_buffer = ""
+                word_count = 0
+                return
+
+            if force:
+                if not phrase.endswith(sentence_endings):
+                    phrase = f"{phrase}."
+                local_voice.speak(phrase)
+                sentence_buffer = ""
+                word_count = 0
+            return
 
     for line in resp.iter_lines():
         if not line:
@@ -359,25 +335,10 @@ def generate_response(user_text: str) -> str:
         # Accumulate into sentence buffer
         sentence_buffer += chunk
         word_count += len(chunk.split())
-
-        # Use regex to detect complete sentences in the buffer
-        # Split on sentence-ending punctuation followed by space or end-of-string
-        _SENTENCE_RE = re.compile(r'(?<=[.!?])\s+|(?<=[.!?])$|\n\n')
-        parts = _SENTENCE_RE.split(sentence_buffer)
-
-        if len(parts) > 1 or word_count >= 15:
-            # We have at least one complete sentence (or hit the overflow)
-            # Speak all complete parts, keep the trailing incomplete fragment
-            for part in parts[:-1]:
-                p = part.strip()
-                # Only speak if ≥3 words or ends in hard punctuation
-                if p and (len(p.split()) >= 3 or any(c in p for c in ".?!")):
-                    local_voice.speak(p)
-            sentence_buffer = parts[-1] if parts[-1] else ""
-            word_count = len(sentence_buffer.split()) if sentence_buffer else 0
+        _flush_buffer()
 
     # Flush any remaining text
-    _flush_buffer()
+    _flush_buffer(force=True)
 
     reply = _EXECUTE_PATTERN.sub("", reply_accum).strip()
     if not reply:

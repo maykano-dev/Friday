@@ -18,3 +18,8 @@ class FridayState(Enum):
 
 current_volume: Any = multiprocessing.Value('d', 0.0)
 is_talking: Any = multiprocessing.Value('b', False)
+
+
+def set_talking(active: bool) -> None:
+    """Centralize talking-state updates across audio subsystems."""
+    is_talking.value = bool(active)
