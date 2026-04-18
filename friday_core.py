@@ -340,7 +340,8 @@ def generate_response(user_text: str) -> str:
         nonlocal sentence_buffer, word_count
         while True:
             phrase = sentence_buffer.strip()
-            if not phrase: return
+            if not phrase:
+                return
 
             match = sentence_pattern.match(phrase)
             if match:
@@ -350,11 +351,13 @@ def generate_response(user_text: str) -> str:
                 if len(full_sentence.split()) >= 3 or force:
                     local_voice.speak(full_sentence)
                     sentence_buffer = phrase[match.end():].lstrip()
-                    word_count = len(sentence_buffer.split()) if sentence_buffer else 0
+                    word_count = len(sentence_buffer.split()
+                                     ) if sentence_buffer else 0
                     continue
-                else: break # Wait for more words to attach to this punctuation
+                else:
+                    break  # Wait for more words to attach to this punctuation
 
-            if word_count >= 20: # Fallback for very long thoughts
+            if word_count >= 20:  # Fallback for very long thoughts
                 local_voice.speak(phrase)
                 sentence_buffer = ""
                 word_count = 0

@@ -97,7 +97,8 @@ def run_friday():
         learning = None
 
     # ── 4. Start the Continuous Listener (daemon) ───────────────────────
-    listener = local_ears.get_listener()
+    # Pass the UI object to the listener here
+    listener = local_ears.get_listener(ui=ui)
     listener.start()
 
     # ── 5. Main event loop — lightweight poll ───────────────────────────

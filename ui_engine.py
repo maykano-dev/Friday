@@ -252,19 +252,16 @@ class NeuralVisualizer:
             # State Logic — color targets + radius behavior
             t = time.time()
             if self.state == "STANDBY":
-                # Warm red heartbeat — pulsing like a waiting heart
-                target_nr, target_ng, target_nb = 255.0, 50.0, 50.0
-                target_lr, target_lg, target_lb = 120.0, 20.0, 20.0
-                heartbeat = (math.sin(t * 3.0) + 1) / 2  # ~90 BPM feel
-                self.target_radius = self.base_radius + heartbeat * 20
-                rotation_speed = 0.01
+                target_nr, target_ng, target_nb = 0.0, 80.0, 255.0 # Deep Blue
+                rotation_speed = 0.005
+            elif self.state == "LISTENING":
+                target_nr, target_ng, target_nb = 255.0, 40.0, 40.0 # Warning Red
+                rotation_speed = 0.02
+                heartbeat = (math.sin(t * 8.0) + 1) / 2
+                self.target_radius = self.base_radius + heartbeat * 30
             elif self.state == "THINKING":
-                # Apex Blue breathing glow — doubled rotation
                 target_nr, target_ng, target_nb = 0.0, 212.0, 255.0
-                target_lr, target_lg, target_lb = 0.0, 80.0, 160.0
-                breath = (math.sin(t * 1.5) + 1) / 2
-                self.target_radius = self.base_radius + 20 + breath * 30
-                rotation_speed = 0.06  # 2x normal
+                rotation_speed = 0.08
             elif self.state == "TALKING":
                 # Cyan/white shimmer — volume reactive
                 target_nr, target_ng, target_nb = 100.0, 255.0, 220.0
