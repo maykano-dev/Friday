@@ -97,8 +97,8 @@ class ContinuousListener:
     RATE = 16000
     SILENCE_TIMEOUT = 1.2       # seconds of silence to end an utterance
     PRE_BUFFER = 0.2            # ignore first 0.2s (pop filter)
-    MIN_SPEECH_DURATION = 0.6   # hallucination guard — discard short noise
-    VAD_THRESHOLD = 0.6
+    MIN_SPEECH_DURATION = 0.8   # hallucination guard — discard short noise
+    VAD_THRESHOLD = 0.75        # higher threshold ignores laptop fan hum
 
     def __init__(self):
         self.result_queue: Queue = Queue()
@@ -204,10 +204,13 @@ class ContinuousListener:
             HALLUCINATIONS = {
                 "thank you", "thanks", "thank you.", "thanks.",
                 "thanks for watching", "thanks for watching.",
+                "thank you for watching", "thank you for watching.",
                 "grazie", "grazie.", "bye", "bye.", "you",
                 "the end", "the end.", "subtitle", "subtitles",
                 "subscribe", "like and subscribe",
                 "silence", "...", "…",
+                "\u0a67", "\u0a67 \u0a67 \u0a67",  # Punjabi digit hallucinations
+                "you.", "i", "um", "hmm", "uh",
             }
             if text.lower().strip().rstrip(".!?,") in HALLUCINATIONS:
                 continue

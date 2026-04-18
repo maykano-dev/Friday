@@ -1,11 +1,12 @@
 """Friday - lightweight always-on AI assistant core.
 
-Interfaces with a local Ollama server running qwen2.5:1.5b.
+Interfaces with the Groq Cloud API for 300+ token/sec inference.
 Designed for constrained environments: no heavy ML libs, stdlib + requests only.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from collections import deque
 from typing import Dict, List, Optional, Any
@@ -15,10 +16,21 @@ import requests
 import action_engine
 import memory_vault
 
+# ── Groq Cloud API ──────────────────────────────────────────────────────────
+# Auto-load .env
+_env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+if os.path.exists(_env_path):
+    with open(_env_path) as _f:
+        for _line in _f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _k, _v = _line.split("=", 1)
+                os.environ.setdefault(_k.strip(), _v.strip())
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODEL_NAME = "gemma4:31b-cloud"
-REQUEST_TIMEOUT = 60  # seconds
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+MODEL_NAME = "llama-3.3-70b-versatile"
+REQUEST_TIMEOUT = 30  # Groq is fast — 30s is generous
 
 # A "turn" here means one user message + one assistant reply (2 messages).
 # Keeping the last 6 turns => up to 12 messages in the rolling window.
@@ -183,33 +195,34 @@ def generate_response(user_text: str) -> str:
 
     messages = _build_messages(user_text, relevant_memories)
     
-    # Check if the last msg has images to determine model
-    model_to_use = MODEL_NAME
-    if messages and "images" in messages[-1]:
-        model_to_use = "llama3.2-vision"
+    if not GROQ_API_KEY:
+        return "GROQ_API_KEY is not set. Please add it to your .env file."
 
     payload = {
-        "model": model_to_use,
+        "model": MODEL_NAME,
         "messages": messages,
-        "stream": True,  # NOW STREAMING!
-        "options": {
-            "temperature": 0.7,
-            "num_ctx": 1024,
-            "num_thread": 4,
-        },
+        "stream": True,
+        "temperature": 0.7,
+        "max_tokens": 1024,
+    }
+
+    headers = {
+        "Authorization": f"Bearer {GROQ_API_KEY}",
+        "Content-Type": "application/json",
     }
 
     try:
-        resp = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT, stream=True)
+        resp = requests.post(GROQ_URL, json=payload, headers=headers,
+                             timeout=REQUEST_TIMEOUT, stream=True)
         resp.raise_for_status()
     except requests.exceptions.ConnectionError:
-        return "I can't reach the local Ollama server. Is it running on port 11434?"
+        return "Can't reach the Groq API. Check your internet connection."
     except requests.exceptions.Timeout:
-        return "The model took too long to respond. Please try again."
+        return "Groq took too long to respond. Please try again."
     except requests.exceptions.HTTPError as e:
-        return f"Ollama returned an error: {e.response.status_code}."
+        return f"Groq API error: {e.response.status_code} — {e.response.text[:200]}."
     except requests.exceptions.RequestException as e:
-        return f"Network error talking to Ollama: {e}."
+        return f"Network error: {e}."
 
     import json, local_voice, main
 
@@ -232,10 +245,19 @@ def generate_response(user_text: str) -> str:
 
     for line in resp.iter_lines():
         if not line: continue
+        line_str = line.decode("utf-8")
+
+        # Groq uses OpenAI SSE format: "data: {json}" or "data: [DONE]"
+        if line_str.startswith("data: "):
+            line_str = line_str[6:]
+        if line_str.strip() == "[DONE]":
+            break
+
         try:
-            chunk_data = json.loads(line.decode("utf-8"))
-            chunk = chunk_data.get("message", {}).get("content", "")
+            chunk_data = json.loads(line_str)
+            chunk = chunk_data.get("choices", [{}])[0].get("delta", {}).get("content", "")
         except: continue
+        if not chunk: continue
         
         reply_accum += chunk
         
@@ -273,7 +295,8 @@ def generate_response(user_text: str) -> str:
             # Speak all complete parts, keep the trailing incomplete fragment
             for part in parts[:-1]:
                 p = part.strip()
-                if p:
+                # Only speak if ≥3 words or ends in hard punctuation
+                if p and (len(p.split()) >= 3 or any(c in p for c in ".?!")):
                     local_voice.speak(p)
             sentence_buffer = parts[-1] if parts[-1] else ""
             word_count = len(sentence_buffer.split()) if sentence_buffer else 0
