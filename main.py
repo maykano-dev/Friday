@@ -23,11 +23,9 @@ ui = None
 
 
 def get_greeting() -> str:
-    """Trigger a dynamic, non-hardcoded greeting."""
-    return friday_core.generate_response(
-        "SYSTEM_BOOT: Give me a unique, concise, witty, and casual startup greeting. "
-        "Do not use action tags."
-    )
+    """Ask Friday's brain to generate a unique greeting."""
+    boot_prompt = "SYSTEM_BOOT: Give me a unique, concise, and witty one-sentence greeting."
+    return friday_core.generate_response(boot_prompt)
 
 
 def _process_utterance(text: str, proactive) -> None:

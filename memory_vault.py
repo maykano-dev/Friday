@@ -187,6 +187,10 @@ def store_memory(text: str) -> bool:
         return False
 
 
+# Alias to prevent external module tracebacks
+add_memory = store_memory
+
+
 def get_recent_memories(limit: int = 10) -> List[str]:
     """Return the most recently stored raw memory strings for offline synthesis."""
     try:
@@ -199,9 +203,6 @@ def get_recent_memories(limit: int = 10) -> List[str]:
     except sqlite3.Error as e:
         print(f"[Friday Vault] get_recent_memories failed: {e}")
         return []
-
-# Alias to prevent external module tracebacks
-add_memory = store_memory
 
 
 def retrieve_memory(user_query: str) -> List[str]:

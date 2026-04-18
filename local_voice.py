@@ -192,6 +192,10 @@ def _player_worker() -> None:
             _audio_queue.task_done()
             _sync_talking_state(channels)
 
+            if _audio_queue.empty() and _text_queue.empty():
+                pygame.mixer.stop()  # Ensure hardware is clear
+                state.set_talking(False)  # Force mic to open
+
         except Exception as e:
             print(f"[Friday TTS] player crash: {e}")
             state.set_talking(False)
