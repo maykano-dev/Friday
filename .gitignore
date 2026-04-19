@@ -34,3 +34,14 @@ chroma_db/
 # OS
 Thumbs.db
 .DS_Store
+
+# Temporary & Local Data
+_ear_temp.wav
+response_cache.db
+resume_state.json
+zara_complete.zip
+
+# Large Models & Folders
+zara-gguf_gguf/
+zara-model/
+assets/

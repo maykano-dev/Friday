@@ -176,7 +176,7 @@ class NeuralVisualizer:
         mono_font = pygame.font.SysFont("Consolas,Courier New,monospace", 16)
         screen = pygame.display.set_mode(
             (self.width, self.height), pygame.RESIZABLE)
-        pygame.display.set_caption("Friday Neural Core")
+        pygame.display.set_caption("Zara Neural Core")
 
         # ENABLE DRAG AND DROP
         try:
@@ -232,10 +232,9 @@ class NeuralVisualizer:
                         import action_engine
                         action_engine.ActionExecutor.process_multimodal_input(
                             event.file)
-                        print(
-                            f"[UI] Successfully processed dropped file: {event.file}")
+                        print(f"[UI] Successfully processed: {event.file}")
                     except Exception as e:
-                        print(f"[UI] Error processing dropped file: {e}")
+                        print(f"[UI] Error processing file: {e}")
                 elif event.type == getattr(pygame, "DROPTEXT", 4096):
                     print(f"[UI] Text dropped: {event.text[:100]}")
                     self.target_wing_open_ratio = 1.0
@@ -515,8 +514,6 @@ class NeuralVisualizer:
 
         for card in self.context_cards:
             if card.card_type == "WEB":
-                import time
-                import math
                 target_font = font
                 lines = ["[ WEB AGENT ]", "-" * 30, card.url, "Status: " +
                          ("Active Scanning..." if card.status == "running" else "Complete")]
@@ -649,7 +646,6 @@ class NeuralVisualizer:
 
         # Neural Scan Line
         if self.wing_open_ratio > 0.5:
-            import time
             scan_y = (math.sin(time.time() * 3) + 1.0) / 2.0
             scan_y_abs = int(scan_y * self.height)
             scan_color = (0, 212, 255)

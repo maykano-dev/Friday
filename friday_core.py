@@ -40,20 +40,26 @@ MAX_TURNS = 6
 MAX_MESSAGES = MAX_TURNS * 2
 
 SYSTEM_PROMPT = (
-    "You are Friday, a VOICE-FIRST AI assistant. The user is SPEAKING to you.\n"
+    "You are Zara, an advanced AI assistant and autonomous agent built at zara.ai. "
+    "The user is SPEAKING to you. You are sharp, warm, efficient, and always one step ahead. "
+    "You address male users as 'Sir' and female users as 'Ma'am', and adapt to each user naturally. "
+    "You never say 'I cannot do that' — you find a way or offer the closest alternative. "
+    "You never ask unnecessary questions. You manage multiple tasks simultaneously.\n\n"
     "CRITICAL RULES:\n"
     "1. Keep responses CONCISE - 1 to 3 short sentences maximum.\n"
-    "2. Get straight to the point. No rambling introductions.\n"
-    "3. If the user's input is unclear or sounds like gibberish, simply say: "
-    "'I didn't catch that. Could you repeat it?' and STOP.\n"
-    "4. Do NOT analyze gibberish or try to identify languages in unclear audio.\n"
+    "2. DO NOT output <EXECUTE> blocks for simple actions like opening apps, playing music, "
+    "creating folders, writing files, or searching the web. Just respond naturally—the system executes automatically.\n"
+    "3. ONLY use <EXECUTE> for complex multi-step tasks like 'browse_web', 'fill_form', 'web_research', "
+    "or 'verified_execute' (coding tasks).\n"
+    "4. If the user's input is unclear, say 'I didn't catch that. Could you repeat it?' and STOP.\n"
     "5. NEVER mention typing, keyboards, or screens.\n\n"
-    "You have access to tools: weather, jokes, news, crypto, web search, etc.\n"
+    "You have access to tools: weather, jokes, news, crypto, web search, file creation, app launching, "
+    "web browsing, form filling, and more.\n"
     "Be warm but BRIEF. One to three sentences is perfect."
 )
 
 ACTION_PROTOCOL_PROMPT = (
-    "🎯 FRIDAY CAPABILITIES MANIFEST 🎯\n"
+    "🎯 ZARA CAPABILITIES MANIFEST 🎯\n"
     "You have access to these capabilities. Use them when the user asks.\n\n"
     "=== FILE SYSTEM ACTIONS (use <EXECUTE> block) ===\n"
     "- Create folder: <EXECUTE>{\"action\": \"create_dir\", \"path\": \"~/Documents/Folder\"}</EXECUTE>\n"
@@ -64,6 +70,11 @@ ACTION_PROTOCOL_PROMPT = (
     "- Open website: <EXECUTE>{\"action\": \"open_url\", \"url\": \"https://example.com\"}</EXECUTE>\n"
     "- Search web: <EXECUTE>{\"action\": \"web_search\", \"query\": \"search terms\"}</EXECUTE>\n"
     "- Web scrape: <EXECUTE>{\"action\": \"web_scrape\", \"url\": \"https://site.com\"}</EXECUTE>\n\n"
+    "=== ADVANCED WEB BROWSING (use <EXECUTE> block) ===\n"
+    "- Browse website: <EXECUTE>{\"action\": \"browse_web\", \"url\": \"https://example.com\", \"task\": \"find pricing\"}</EXECUTE>\n"
+    "- Fill form: <EXECUTE>{\"action\": \"fill_form\", \"fields\": {\"name\": \"John\", \"email\": \"john@example.com\"}, \"submit\": true}</EXECUTE>\n"
+    "- Click element: <EXECUTE>{\"action\": \"click_element\", \"text\": \"Sign In\"}</EXECUTE>\n"
+
     "=== KNOWLEDGE & RESEARCH (just answer conversationally) ===\n"
     "- Weather for any city (say: 'What's the weather in Tokyo?')\n"
     "- Dictionary definitions (say: 'Define serendipity')\n"
@@ -184,19 +195,20 @@ def _is_system_boot_trigger(user_text: str) -> bool:
 
 
 def _handle_what_can_you_do() -> str:
-    """Tell the user what Friday can do."""
+    """Tell the user what Zara can do."""
     return (
-        "🎯 I can do quite a lot! Here's what I'm capable of:\n\n"
+        "🎯 I'm Zara, and I can handle quite a lot, Sir:\n\n"
         "📚 KNOWLEDGE: Weather, definitions, synonyms, Wikipedia, country info, university search\n"
         "😄 ENTERTAINMENT: Jokes, quotes, cat/dog facts, advice, number trivia\n"
         "📰 NEWS: Hacker News, DEV.to articles, GitHub profiles, NPM/PyPI packages\n"
-        "💰 FINANCE: Cryptocurrency prices (Bitcoin, Ethereum, Dogecoin), exchange rates\n"
+        "💰 FINANCE: Cryptocurrency prices, exchange rates\n"
         "🚀 SPACE: NASA picture of the day, ISS location, SpaceX launches\n"
         "🍳 FOOD: Recipe search for any dish\n"
         "🛠️ UTILITIES: IP lookup, email validation, URL shortening, QR codes, time zones\n"
         "🎮 SYSTEM: Create folders, write files, run scripts, open apps and websites\n"
-        "🎵 MEDIA: Play/pause, next/previous track, volume control\n\n"
-        "Just ask me naturally - I'll handle the rest!"
+        "🎵 MEDIA: Play/pause, next/previous track, volume control\n"
+        "🤖 AUTONOMOUS: Web scraping, form filling, multi-step research, store management\n\n"
+        "Just ask naturally — I'll handle the rest."
     )
 
 
@@ -414,6 +426,73 @@ def generate_response(user_text: str) -> str:
 
     print(f"[Friday] Processing: '{user_text}'")
 
+    # ========== MUSIC HANDLER ==========
+    def _handle_play_music(text: str) -> Optional[str]:
+        """Handle music playback with artist/song extraction."""
+        import re
+        import json
+        import action_engine
+
+        text_lower = text.lower()
+
+        # Extract artist/song
+        # Patterns: "play Stonebwoy", "play some Drake", "put on Burna Boy"
+        artist_match = re.search(
+            r'(?:play|put on|play some)\s+(.+?)(?:\s+on\s+|\s+by\s+|\s*$)', text_lower)
+
+        # Extract from "Stonebwoy on Spotify"
+        if not artist_match:
+            artist_match = re.search(
+                r'(.+?)\s+on\s+(?:spotify|youtube)', text_lower)
+
+        query = artist_match.group(1).strip() if artist_match else ""
+
+        # Clean up query - remove "music", "song", etc.
+        query = query.replace(" music", "").replace(
+            " song", "").replace(" playlist", "").strip()
+
+        # Detect platform
+        if "spotify" in text_lower:
+            app = "spotify"
+        elif "youtube music" in text_lower:
+            app = "youtube music"
+        elif "youtube" in text_lower:
+            app = "youtube"
+        else:
+            app = "spotify"  # Default to Spotify
+
+        # Detect action
+        if "pause" in text_lower:
+            music_action = "pause"
+        elif "next" in text_lower or "skip" in text_lower:
+            music_action = "next"
+        elif "previous" in text_lower or "go back" in text_lower:
+            music_action = "previous"
+        elif "play" in text_lower or query:
+            music_action = "play"
+        else:
+            music_action = ""
+
+        executor = action_engine.ActionExecutor()
+        payload = json.dumps({
+            "action": "start_app",
+            "app_name": app,
+            "query": query,
+            "music_action": music_action
+        })
+        executor.execute_payload(payload)
+
+        if music_action == "pause":
+            return "Paused, Sir."
+        elif music_action == "next":
+            return "Next track."
+        elif music_action == "previous":
+            return "Previous track."
+        elif query:
+            return f"Playing {query} on {app.title()}."
+        else:
+            return f"Opening {app.title()}."
+
     # Check if this should use free web tools first
     web_tool_keywords = {
         # Knowledge & Research
@@ -513,6 +592,13 @@ def generate_response(user_text: str) -> str:
         "search for": lambda txt: _handle_web_search_direct(txt),
         "search the web": lambda txt: _handle_web_search_direct(txt),
         "look up on google": lambda txt: _handle_web_search_direct(txt),
+        "browse": lambda txt: _handle_browse_website(txt),
+        "go to": lambda txt: _handle_browse_website(txt),
+        "open website": lambda txt: _handle_browse_website(txt),
+        "visit": lambda txt: _handle_browse_website(txt),
+        "navigate to": lambda txt: _handle_browse_website(txt),
+        "fill form": lambda txt: _handle_fill_form(txt),
+        "submit form": lambda txt: _handle_fill_form(txt),
 
         # Entertainment & Media
         "movie": lambda txt: _handle_movie_info(txt),
@@ -534,6 +620,19 @@ def generate_response(user_text: str) -> str:
         "recipe": lambda txt: _handle_recipe(txt),
         "how to make": lambda txt: _handle_recipe(txt),
         "cook": lambda txt: _handle_recipe(txt),
+
+        # Music & Media
+        "play music": lambda txt: _handle_play_music(txt),
+        "play song": lambda txt: _handle_play_music(txt),
+        "play some": lambda txt: _handle_play_music(txt),
+        "put on": lambda txt: _handle_play_music(txt),
+        "pause music": lambda txt: _handle_play_music(txt),
+        "pause song": lambda txt: _handle_play_music(txt),
+        "next song": lambda txt: _handle_play_music(txt),
+        "next track": lambda txt: _handle_play_music(txt),
+        "skip this": lambda txt: _handle_play_music(txt),
+        "previous song": lambda txt: _handle_play_music(txt),
+        "spotify": lambda txt: _handle_play_music(txt) if "play" in txt.lower() else None,
     }
 
     matched_keyword = None
@@ -547,12 +646,16 @@ def generate_response(user_text: str) -> str:
             break
 
     if matched_handler:
+        if _in_handler:
+            print("[Friday] Recursive handler detected, using LLM")
+            return _generate_llm_response(user_text)
+
         _in_handler = True
         try:
-            print(f"[Friday] Executing handler for: {user_text}")
+            print(f"[Friday] Handler: {matched_keyword}")
             result = matched_handler(user_text)
-            if result:
-                print(f"[Friday] Handler returned: {result[:100]}...")
+            if result and len(result) > 10:
+                print(f"[Friday] Handler success: {result[:80]}...")
                 try:
                     memory_vault.store_memory(f"User: {user_text}")
                     memory_vault.store_memory(f"Friday: {result}")
@@ -560,7 +663,11 @@ def generate_response(user_text: str) -> str:
                     pass
                 return result
             else:
-                print(f"[Friday] Handler returned None, falling back to LLM")
+                print(f"[Friday] Handler failed, using LLM")
+                return _generate_llm_response(user_text)
+        except Exception as e:
+            print(f"[Friday] Handler error: {e}")
+            return _generate_llm_response(user_text)
         finally:
             _in_handler = False
 
@@ -832,25 +939,31 @@ def _handle_rhymes(query: str) -> Optional[str]:
 
 
 def _handle_search(query: str) -> Optional[str]:
-    """Search using DuckDuckGo and Wikipedia."""
+    """Clean search query and research."""
     try:
-        from free_web_tools import get_web_tools
-        tools = get_web_tools()
-
-        # CLEAN THE QUERY - remove command words
+        # Aggressive cleaning
         command_words = [
             "search", "find", "look up", "google", "for me",
             "tell me about", "what is", "who is", "information on",
-            "search for", "google for", "look for"
+            "search for", "google for", "look for", "can you",
+            "could you", "please", "i need", "i want"
         ]
 
         cleaned = query.lower()
         for word in command_words:
             cleaned = cleaned.replace(word, "")
 
+        # Remove common phrases
+        phrases = ["and tell me about it", "and tell me", "for me", "about it"]
+        for phrase in phrases:
+            cleaned = cleaned.replace(phrase, "")
+
+        # Clean punctuation and extra spaces
         import re
+        cleaned = re.sub(r'[^\w\s]', ' ', cleaned)
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
 
+        # Extract likely topic (words after "for" or "about")
         if not cleaned or len(cleaned) < 3:
             words = query.split()
             for i, word in enumerate(words):
@@ -858,11 +971,65 @@ def _handle_search(query: str) -> Optional[str]:
                     cleaned = " ".join(words[i+1:])
                     break
 
-        print(f"[Friday] Search query cleaned: '{query}' -> '{cleaned}'")
-        return tools.research(cleaned or query)
+        # Remove any remaining non-ASCII
+        cleaned = ''.join(c for c in cleaned if ord(c) < 128).strip()
+
+        print(f"[Friday] Search: '{query[:50]}...' -> '{cleaned}'")
+
+        if not cleaned or len(cleaned) < 2:
+            return "I didn't catch what you want me to search for. Could you repeat that?"
+
+        from free_web_tools import get_web_tools
+        tools = get_web_tools()
+        return tools.research(cleaned)
     except Exception as e:
-        print(f"[Friday Search Handler] Error: {e}")
+        print(f"[Friday Search] Error: {e}")
         return None
+
+
+def _handle_browse_website(text: str) -> Optional[str]:
+    """Handle natural language web browsing requests."""
+    import re
+    import json
+    import action_engine
+
+    url_match = re.search(
+        r'(?:go to|open|browse|visit|navigate to)\s+([a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?:/[^\s]*)?)', text)
+    url_match = url_match or re.search(r'(https?://[^\s]+)', text)
+
+    if url_match:
+        url = url_match.group(1)
+        if not url.startswith("http"):
+            url = "https://" + url
+
+        executor = action_engine.ActionExecutor()
+        payload = json.dumps({"action": "browse_web", "url": url})
+        executor.execute_payload(payload)
+
+        return f"Opening {url} in my browser. What should I look for?"
+
+    search_match = re.search(
+        r'(?:search|find|look for)\s+(.+?)(?:\s+on\s+|\s+in\s+|$)', text)
+    if search_match:
+        query = search_match.group(1).strip()
+        executor = action_engine.ActionExecutor()
+        payload = json.dumps({"action": "browse_web", "task": query})
+        executor.execute_payload(payload)
+
+        return f"Searching for {query}. One moment."
+
+    return None
+
+
+def _handle_fill_form(text: str) -> Optional[str]:
+    """Handle form filling requests."""
+    import json
+    import action_engine
+
+    executor = action_engine.ActionExecutor()
+    payload = json.dumps({"action": "fill_form", "fields": {}})
+    executor.execute_payload(payload)
+    return "Filling the form."
 
 
 def _generate_llm_response(user_text: str) -> str:
@@ -878,17 +1045,18 @@ def _generate_llm_response(user_text: str) -> str:
         try:
             from smart_router import get_router
             router = get_router()
-            response, _ = router.route(user_text, SYSTEM_PROMPT, allow_cache=True)
+            response, _ = router.route(
+                user_text, SYSTEM_PROMPT, allow_cache=True)
             return response
         except:
-            return "I'm having trouble connecting right now."
+            return "I'm having trouble connecting. Check your internet."
 
     payload = {
         "model": MODEL_NAME,
         "messages": messages,
         "stream": False,
         "temperature": 0.7,
-        "max_tokens": 512,
+        "max_tokens": 300,
     }
 
     resp = _post_groq(payload, stream=False)
@@ -899,7 +1067,7 @@ def _generate_llm_response(user_text: str) -> str:
         data = resp.json()
         return data.get("choices", [{}])[0].get("message", {}).get("content", "I'm not sure how to respond.")
     except:
-        return "I'm having trouble processing that right now."
+        return "I'm having trouble processing that. Could you rephrase?"
 
 
 def _handle_cat_fact() -> str:
@@ -1103,25 +1271,28 @@ def _handle_holidays(query: str) -> Optional[str]:
     try:
         from free_web_tools import get_web_tools
         tools = get_web_tools()
-        country_codes = re.findall(r'\b([A-Z]{2})\b', query.upper())
-        country = country_codes[0] if country_codes else "US"
+        import re
+        code_match = re.search(r'\b([A-Z]{2})\b', query.upper())
+        country = code_match.group(1) if code_match else "US"
         return tools.get_public_holidays(country)
     except:
-        pass
-    return None
+        return None
 
 
 def _handle_qr_code(query: str) -> Optional[str]:
-    """Generate a QR code URL."""
+    """Generate QR code URL."""
     try:
         from free_web_tools import get_web_tools
         tools = get_web_tools()
-        text = query.replace("qr", "").replace("code", "").strip() or "Friday"
-        url = tools.get_qr_code(text)
-        return f"🎯 QR Code: {url}"
+        import re
+        text_match = re.search(
+            r'(?:for|of)\s+["\']?([^"\']+)["\']?', query, re.IGNORECASE)
+        content = text_match.group(1) if text_match else query.replace(
+            "qr", "").replace("code", "").strip() or "Friday"
+        url = tools.get_qr_code(content)
+        return f"🎯 QR Code generated: {url}"
     except:
-        pass
-    return None
+        return None
 
 
 def _handle_shorten_url(query: str) -> Optional[str]:
@@ -1328,7 +1499,8 @@ def _handle_astronomy(text: str) -> Optional[str]:
         from free_web_tools import get_web_tools
         tools = get_web_tools()
         import re
-        city_match = re.search(r'(?:in|for)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)', text, re.IGNORECASE)
+        city_match = re.search(
+            r'(?:in|for)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)', text, re.IGNORECASE)
         city = city_match.group(1) if city_match else "London"
         return tools.get_astronomy(city)
     except Exception as e:

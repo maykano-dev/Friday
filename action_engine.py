@@ -1,4 +1,4 @@
-"""Friday - local execution bridge.
+"""Zara - local execution bridge.
 
 Lets the LLM autonomously trigger file-system operations and sub-scripts
 on background threads so the main conversational/UI loops never block.
@@ -25,6 +25,8 @@ class ActionExecutor:
     """Parses LLM-issued action payloads and dispatches them off the main thread."""
 
     last_run_code_bug: Optional[str] = None
+    _recent_actions: Dict[str, float] = {}
+    _action_cooldown: float = 1.5  # 1.5 second cooldown between duplicate actions
 
     @staticmethod
     def _speak_confirmation(message: str) -> None:
@@ -33,7 +35,7 @@ class ActionExecutor:
             import local_voice
             local_voice.speak(message)
         except Exception as e:
-            print(f"[Friday Action] confirmation speak failed: {e}")
+            print(f"[Zara Action] confirmation speak failed: {e}")
 
     def execute_payload(self, json_string: str) -> Optional[threading.Thread]:
         """Parse `json_string` and run the requested action in a daemon thread.
@@ -44,16 +46,16 @@ class ActionExecutor:
         try:
             payload: Dict[str, Any] = json.loads(json_string)
         except (TypeError, ValueError) as e:
-            print(f"[Friday Action] invalid JSON payload: {e}")
+            print(f"[Zara Action] invalid JSON payload: {e}")
             return None
 
         if not isinstance(payload, dict):
-            print("[Friday Action] payload must be a JSON object")
+            print("[Zara Action] payload must be a JSON object")
             return None
 
         action = payload.get("action")
         if not isinstance(action, str) or not action:
-            print("[Friday Action] payload missing 'action' string")
+            print("[Zara Action] payload missing 'action' string")
             return None
 
         worker = threading.Thread(
@@ -67,6 +69,24 @@ class ActionExecutor:
     # ---- Dispatch ----------------------------------------------------------
 
     def _dispatch(self, action: str, payload: Dict[str, Any]) -> None:
+        import time
+
+        # DEDUPLICATION GUARD: Prevent duplicate actions within cooldown window
+        action_key = f"{action}_{json.dumps(payload, sort_keys=True)}"
+        now = time.time()
+
+        if action_key in self._recent_actions:
+            if now - self._recent_actions[action_key] < self._action_cooldown:
+                print(
+                    f"[Zara Action] SKIPPING duplicate: {action} (within {self._action_cooldown}s)")
+                return
+
+        self._recent_actions[action_key] = now
+
+        # Clean old entries (keep last 10 seconds to prevent memory leak)
+        self._recent_actions = {k: v for k, v in self._recent_actions.items()
+                                if now - v < 10.0}
+
         try:
             if action == "create_dir":
                 self._create_dir(payload)
@@ -86,6 +106,12 @@ class ActionExecutor:
                 self._open_url(payload)
             elif action == "web_search":
                 self._web_search(payload)
+            elif action == "browse_web":
+                self._browse_web(payload)
+            elif action == "fill_form":
+                self._fill_form(payload)
+            elif action == "click_element":
+                self._click_element(payload)
             elif action == "media_control":
                 self.media_control(payload)
             elif action == "ambient_mode":
@@ -94,99 +120,80 @@ class ActionExecutor:
                 sound = payload.get("sound", "rain")
                 pe.enter_ambient_mode(sound)
             else:
-                print(f"[Friday Action] unknown action: {action!r}")
+                print(f"[Zara Action] unknown action: {action!r}")
         except Exception as e:
-            print(f"[Friday Action] '{action}' failed: {e}")
+            print(f"[Zara Action] '{action}' failed: {e}")
 
     # ---- Action handlers ---------------------------------------------------
 
     @staticmethod
     def _create_dir(payload: Dict[str, Any]) -> None:
         raw_path = payload.get("path")
-        print(f"[Friday Action] create_dir requested: raw_path={raw_path!r}")
+        print(f"[Zara Action] create_dir requested: raw_path={raw_path!r}")
 
         if not isinstance(raw_path, str) or not raw_path.strip():
             print(
-                f"[Friday Action] create_dir FAILED: missing or empty 'path' (payload={payload!r})")
-            ActionExecutor._speak_confirmation(
-                "I encountered an error while creating that directory.")
+                f"[Zara Action] create_dir FAILED: missing or empty 'path' (payload={payload!r})")
             return
 
         # Normalize: expand ~, resolve to absolute, so relative paths
-        # from the LLM don't silently land in Friday's working dir.
+        # from the LLM don't silently land in Zara's working dir.
         try:
             expanded = os.path.expanduser(os.path.expandvars(raw_path))
             abs_path = os.path.abspath(expanded)
         except Exception as e:
             print(
-                f"[Friday Action] create_dir FAILED during path normalization: {type(e).__name__}: {e}")
-            ActionExecutor._speak_confirmation(
-                "I encountered an error while creating that directory.")
+                f"[Zara Action] create_dir FAILED during path normalization: {type(e).__name__}: {e}")
             return
 
         dir_name = os.path.basename(abs_path.rstrip("\\/")) or abs_path
 
         parent = os.path.dirname(abs_path)
-        print(f"[Friday Action]   normalized: {abs_path}")
-        print(f"[Friday Action]   parent:     {parent}")
+        print(f"[Zara Action]   normalized: {abs_path}")
+        print(f"[Zara Action]   parent:     {parent}")
         print(
-            f"[Friday Action]   parent_exists: {os.path.isdir(parent) if parent else '(no parent)'}")
+            f"[Zara Action]   parent_exists: {os.path.isdir(parent) if parent else '(no parent)'}")
 
         if os.path.exists(abs_path):
             if os.path.isdir(abs_path):
                 print(
-                    f"[Friday Action] create_dir no-op: directory already exists at {abs_path}")
-                ActionExecutor._speak_confirmation(
-                    f"The directory {dir_name} already exists.")
+                    f"[Zara Action] create_dir no-op: directory already exists at {abs_path}")
                 return
             print(
-                f"[Friday Action] create_dir FAILED: path exists but is NOT a directory: {abs_path}")
-            ActionExecutor._speak_confirmation(
-                "I encountered an error while creating that directory.")
+                f"[Zara Action] create_dir FAILED: path exists but is NOT a directory: {abs_path}")
             return
 
         try:
             os.makedirs(abs_path, exist_ok=True)
         except PermissionError as e:
-            print(f"[Friday Action] create_dir PERMISSION DENIED: {e}")
-            ActionExecutor._speak_confirmation(
-                "I encountered an error while creating that directory.")
+            print(f"[Zara Action] create_dir PERMISSION DENIED: {e}")
             return
         except FileExistsError as e:
-            print(f"[Friday Action] create_dir race: {e}")
-            ActionExecutor._speak_confirmation(
-                "I encountered an error while creating that directory.")
+            print(f"[Zara Action] create_dir race: {e}")
             return
         except OSError as e:
             print(
-                f"[Friday Action] create_dir OSError (errno={e.errno}): {e.strerror} -- on {e.filename!r}")
-            ActionExecutor._speak_confirmation(
-                "I encountered an error while creating that directory.")
+                f"[Zara Action] create_dir OSError (errno={e.errno}): {e.strerror} -- on {e.filename!r}")
             return
         except Exception as e:
             print(
-                f"[Friday Action] create_dir UNEXPECTED {type(e).__name__}: {e}")
-            ActionExecutor._speak_confirmation(
-                "I encountered an error while creating that directory.")
+                f"[Zara Action] create_dir UNEXPECTED {type(e).__name__}: {e}")
+            return
             return
 
         if os.path.isdir(abs_path):
-            print(f"[Friday Action] created directory: {abs_path}")
-            ActionExecutor._speak_confirmation(
-                f"The directory {dir_name} has been created successfully."
-            )
+            print(f"[Zara Action] created directory: {abs_path}")
+            # Zara's brain handles the confirmation naturally
         else:
             print(
-                f"[Friday Action] create_dir completed without raising but target is missing: {abs_path}")
-            ActionExecutor._speak_confirmation(
-                "I encountered an error while creating that directory.")
+                f"[Zara Action] create_dir completed without raising but target is missing: {abs_path}")
 
     @staticmethod
     def _write_file(payload: Dict[str, Any]) -> None:
         path = payload.get("path")
         content = payload.get("content", "")
         if not isinstance(path, str) or not path:
-            print("[Friday Action] write_file missing 'path'")
+            print("[Zara Action] write_file missing 'path'")
             return
         if not isinstance(content, str):
             content = str(content)
@@ -199,8 +206,7 @@ class ActionExecutor:
 
         with open(path, "w", encoding="utf-8") as f:
             f.write(content)
-        print(f"[Friday Action] wrote file: {path} ({len(content)} chars)")
-        ActionExecutor._speak_confirmation("File written.")
+        print(f"[Zara Action] wrote file: {path} ({len(content)} chars)")
 
     @classmethod
     def _run_script(cls, payload: Dict[str, Any]) -> None:
@@ -212,7 +218,7 @@ class ActionExecutor:
             cmd_args = command
             shell = True
         else:
-            print("[Friday Action] run_script missing 'command'")
+            print("[Zara Action] run_script missing 'command'")
             return
 
         try:
@@ -225,14 +231,14 @@ class ActionExecutor:
             )
         except subprocess.TimeoutExpired:
             print(
-                f"[Friday Action] script timed out after {SCRIPT_TIMEOUT_SECONDS}s")
+                f"[Zara Action] script timed out after {SCRIPT_TIMEOUT_SECONDS}s")
             return
 
-        print(f"[Friday Action] script exit={result.returncode}")
+        print(f"[Zara Action] script exit={result.returncode}")
         if result.stdout:
-            print(f"[Friday Action] stdout: {result.stdout.strip()}")
+            print(f"[Zara Action] stdout: {result.stdout.strip()}")
         if result.stderr:
-            print(f"[Friday Action] stderr: {result.stderr.strip()}")
+            print(f"[Zara Action] stderr: {result.stderr.strip()}")
 
         if result.returncode != 0:
             error_msg = result.stderr.strip() or result.stdout.strip()
@@ -245,7 +251,7 @@ class ActionExecutor:
     def verified_execute(cls, payload: Dict[str, Any]) -> None:
         attempt = payload.get("attempt", 1)
         if attempt > 3:
-            print(f"[Friday Action] verified_execute failed after 3 attempts.")
+            print(f"[Zara Action] verified_execute failed after 3 attempts.")
             import friday_core
             import main
             if main.ui:
@@ -256,7 +262,7 @@ class ActionExecutor:
 
         code = payload.get("code")
         if not isinstance(code, str) or not code:
-            print("[Friday Action] verified_execute missing 'code'")
+            print("[Zara Action] verified_execute missing 'code'")
             return
 
         import memory_vault
@@ -266,17 +272,17 @@ class ActionExecutor:
         if main.ui:
             main.ui.set_bg_task(f"Testing Code (Attempt {attempt}/3)...")
 
-        sandbox_dir = os.path.abspath("friday_sandbox")
+        sandbox_dir = os.path.abspath("zara_sandbox")
         os.makedirs(sandbox_dir, exist_ok=True)
         sandbox_path = os.path.join(sandbox_dir, "_sandbox.py")
         try:
             with open(sandbox_path, "w", encoding="utf-8") as f:
                 f.write(code)
             print(
-                f"[Friday Action] running code sequentially from {sandbox_path}")
+                f"[Zara Action] running code sequentially from {sandbox_path}")
         except Exception as e:
             print(
-                f"[Friday Action] verified_execute failed to write sandbox: {e}")
+                f"[Zara Action] verified_execute failed to write sandbox: {e}")
             return
 
         try:
@@ -288,17 +294,17 @@ class ActionExecutor:
             )
 
             if result.returncode == 0:
-                print("[Friday Action] verified_execute success!")
+                print("[Zara Action] verified_execute success!")
                 if result.stdout:
-                    print(f"[Friday Action] stdout: {result.stdout.strip()}")
+                    print(f"[Zara Action] stdout: {result.stdout.strip()}")
                 memory_vault.log_coding_task(code, "Success")
                 if main.ui:
                     main.ui.set_bg_task("")
             else:
                 print(
-                    f"[Friday Action] verified_execute failed with exit={result.returncode}")
+                    f"[Zara Action] verified_execute failed with exit={result.returncode}")
                 error_msg = result.stderr.strip() if result.stderr else "Unknown Error"
-                print(f"[Friday Action] output: {error_msg}")
+                print(f"[Zara Action] output: {error_msg}")
                 memory_vault.log_coding_task(code, "Failed")
 
                 prompt = (
@@ -310,7 +316,7 @@ class ActionExecutor:
                 friday_core.generate_response(prompt)
 
         except subprocess.TimeoutExpired as e:
-            print("[Friday Action] sandbox execution timed out")
+            print("[Zara Action] sandbox execution timed out")
             error_msg = f"TimeoutExpired after {SCRIPT_TIMEOUT_SECONDS}s."
             memory_vault.log_coding_task(code, "Failed")
             prompt = (
@@ -323,23 +329,114 @@ class ActionExecutor:
 
     @classmethod
     def _start_app(cls, payload: Dict[str, Any]) -> None:
-        """Execute a local application or script using OS routing."""
-        app_name = payload.get("app_name")
-        if not app_name:
+        """Execute a local application with music/search/play capabilities."""
+        app_name = payload.get("app_name", "").lower()
+        search_query = payload.get("query", "")
+        # "play", "pause", "next", "previous"
+        action = payload.get("music_action", "")
+
+        if not app_name and not action:
             return
+
         try:
             import platform
             import subprocess
-            import os
-            if platform.system() == "Windows":
+            import webbrowser
+            from urllib.parse import quote_plus
+            import pyautogui
+            import time
+
+            # ── MEDIA CONTROL (no app launch needed) ─────────────────
+            if action == "play_pause":
+                pyautogui.press("playpause")
+                print(f"[Zara Action] Media: play/pause")
+                return
+            elif action == "next":
+                pyautogui.press("nexttrack")
+                print(f"[Zara Action] Media: next track")
+                return
+            elif action == "previous":
+                pyautogui.press("prevtrack")
+                print(f"[Zara Action] Media: previous track")
+                return
+            elif action == "play":
+                # Try to hit play if Spotify is already open
+                pyautogui.press("playpause")
+                print(f"[Zara Action] Media: play")
+                return
+            elif action == "pause":
+                pyautogui.press("playpause")
+                print(f"[Zara Action] Media: pause")
+                return
+
+            # ── SPOTIFY ─────────────────────────────────────────────
+            if "spotify" in app_name:
+                if search_query:
+                    # Open Spotify search URI
+                    spotify_uri = f"spotify:search:{quote_plus(search_query)}"
+                    webbrowser.open(spotify_uri)
+                    print(f"[Zara Action] Spotify search: {search_query}")
+
+                    # Wait for Spotify to focus, then try to play first result
+                    time.sleep(2)
+
+                    # Try to select and play the first result
+                    # This uses keyboard shortcuts that work in Spotify
+                    pyautogui.press("tab")  # Focus search results
+                    time.sleep(0.5)
+                    pyautogui.press("enter")  # Select first result
+                    time.sleep(0.5)
+                    pyautogui.press("enter")  # Play
+
+                else:
+                    # Just open Spotify
+                    os.startfile("spotify:")
+                    print(f"[Zara Action] opened Spotify")
+
+            # ── YOUTUBE MUSIC ───────────────────────────────────────
+            elif "youtube" in app_name and "music" in app_name:
+                if search_query:
+                    url = f"https://music.youtube.com/search?q={quote_plus(search_query)}"
+                    webbrowser.open(url)
+                    print(
+                        f"[Zara Action] YouTube Music search: {search_query}")
+
+                    # Auto-play first result
+                    time.sleep(3)
+                    pyautogui.press("tab")
+                    pyautogui.press("tab")
+                    pyautogui.press("enter")
+                else:
+                    webbrowser.open("https://music.youtube.com")
+                    print(f"[Zara Action] opened YouTube Music")
+
+            # ── YOUTUBE (regular) ───────────────────────────────────
+            elif "youtube" in app_name:
+                if search_query:
+                    url = f"https://www.youtube.com/results?search_query={quote_plus(search_query)}"
+                    webbrowser.open(url)
+                    print(f"[Zara Action] YouTube search: {search_query}")
+
+                    # Auto-play first result
+                    time.sleep(3)
+                    pyautogui.press("tab")
+                    pyautogui.press("tab")
+                    pyautogui.press("enter")
+                else:
+                    webbrowser.open("https://www.youtube.com")
+                    print(f"[Zara Action] opened YouTube")
+
+            # ── OTHER APPS ──────────────────────────────────────────
+            elif platform.system() == "Windows":
                 os.startfile(app_name)
+                print(f"[Zara Action] started app: {app_name}")
             else:
                 subprocess.Popen(["open" if platform.system()
                                  == "Darwin" else "xdg-open", app_name])
-            print(f"[Friday Action] started app: {app_name}")
-            cls._speak_confirmation("Application launched.")
+                print(f"[Zara Action] started app: {app_name}")
+
         except Exception as e:
-            print(f"[Friday Action] start_app failed: {e}")
+            print(f"[Zara Action] start_app failed: {e}")
 
     @classmethod
     def _web_scrape(cls, payload: Dict[str, Any]) -> None:
@@ -364,10 +461,10 @@ class ActionExecutor:
                     import memory_vault
                     memory_vault.index_data(text[:10000], "web_scrape")
                     print(
-                        f"[Friday Action] Successfully scraped and indexed {url}")
-                    cls._speak_confirmation("Web scrape complete.")
+                        f"[Zara Action] Successfully scraped and indexed {url}")
+                    # Zara's brain handles confirmation naturally
             except Exception as e:
-                print(f"[Friday Action] web_scrape failed: {e}")
+                print(f"[Zara Action] web_scrape failed: {e}")
             finally:
                 if main.ui:
                     main.ui.set_bg_task("")
@@ -386,7 +483,7 @@ class ActionExecutor:
         web_card = None
         if main.ui:
             main.ui.set_subtitle_text(
-                "[Friday: Initiating Stealth Web Bridge...]")
+                "[Zara: Initiating Stealth Web Bridge...]")
             web_card = WebResultCard(
                 "https://stealth-bridge.local", status="running")
             main.ui.context_cards.append(web_card)
@@ -470,10 +567,10 @@ Return purely valid JSON without markdown tags."""
                     browser.close()
                     if web_card:
                         web_card.status = "complete"
-                    cls._speak_confirmation("Research complete.")
+                    # Zara's brain handles confirmation naturally
 
             except Exception as e:
-                print(f"[Friday Action] web_research failed: {e}")
+                print(f"[Zara Action] web_research failed: {e}")
                 if web_card:
                     web_card.content = f"Fatal Error: {e}"
                     web_card.status = "complete"
@@ -486,28 +583,22 @@ Return purely valid JSON without markdown tags."""
         url = payload.get("url")
         if not isinstance(url, str) or not url.strip():
             print(
-                f"[Friday Action] open_url FAILED: missing or empty 'url' (payload={payload!r})")
-            ActionExecutor._speak_confirmation(
-                "I could not open the URL because it was missing or invalid.")
+                f"[Zara Action] open_url FAILED: missing or empty 'url' (payload={payload!r})")
             return
 
         import webbrowser
         try:
             webbrowser.open(url)
-            ActionExecutor._speak_confirmation("Opened the requested URL.")
+            # Zara's brain handles confirmation naturally
         except Exception as e:
-            print(f"[Friday Action] open_url failed: {e}")
-            ActionExecutor._speak_confirmation(
-                "I failed to open the URL.")
+            print(f"[Zara Action] open_url failed: {e}")
 
     @staticmethod
     def _web_search(payload: Dict[str, Any]) -> None:
         query = payload.get("query")
         if not isinstance(query, str) or not query.strip():
             print(
-                f"[Friday Action] web_search FAILED: missing or empty 'query' (payload={payload!r})")
-            ActionExecutor._speak_confirmation(
-                "I could not perform the search because the query was missing.")
+                f"[Zara Action] web_search FAILED: missing or empty 'query' (payload={payload!r})")
             return
 
         from urllib.parse import quote_plus
@@ -516,12 +607,84 @@ Return purely valid JSON without markdown tags."""
         search_url = f"https://www.google.com/search?q={quote_plus(query)}"
         try:
             webbrowser.open(search_url)
-            ActionExecutor._speak_confirmation(
-                f"Searched the web for {query}.")
+            # Zara's brain handles confirmation naturally
         except Exception as e:
-            print(f"[Friday Action] web_search failed: {e}")
-            ActionExecutor._speak_confirmation(
-                "I failed to open the web search.")
+            print(f"[Zara Action] web_search failed: {e}")
+
+    @classmethod
+    def _browse_web(cls, payload: Dict[str, Any]) -> None:
+        """Advanced web browsing with full interaction."""
+        url = payload.get("url")
+        task = payload.get("task", "")
+        session_id = payload.get("session_id", "default")
+
+        if not url and not task:
+            print("[Zara Action] browse_web missing url/task")
+            return
+
+        def browse_thread():
+            try:
+                from web_agent import get_web_agent
+                agent = get_web_agent()
+
+                if session_id not in agent.sessions:
+                    agent.create_session(session_id)
+
+                if url:
+                    snapshot = agent.navigate(session_id, url)
+                    # Zara's brain handles feedback naturally
+
+                    if task:
+                        text = snapshot.text_content[:1000]
+                        # Zara's brain filters and speaks results
+
+                elif task:
+                    snapshot = agent.search(session_id, task)
+                    # Zara's brain handles search feedback naturally
+            except Exception as e:
+                print(f"[WebAgent] Error: {e}")
+                # Zara's brain handles error naturally
+
+        threading.Thread(target=browse_thread, daemon=True).start()
+
+    @classmethod
+    def _fill_form(cls, payload: Dict[str, Any]) -> None:
+        """Fill a form on the current page."""
+        session_id = payload.get("session_id", "default")
+        fields = payload.get("fields", {})
+        submit = payload.get("submit", False)
+
+        def fill_thread():
+            try:
+                from web_agent import get_web_agent
+                agent = get_web_agent()
+
+                agent.fill_form(session_id, fields, submit=submit)
+                # Zara's brain handles confirmation naturally
+            except Exception as e:
+                print(f"[WebAgent] Fill error: {e}")
+                # Zara's brain handles error naturally
+
+        threading.Thread(target=fill_thread, daemon=True).start()
+
+    @classmethod
+    def _click_element(cls, payload: Dict[str, Any]) -> None:
+        """Click an element on the page."""
+        session_id = payload.get("session_id", "default")
+        text = payload.get("text")
+        selector = payload.get("selector")
+
+        def click_thread():
+            try:
+                from web_agent import get_web_agent
+                agent = get_web_agent()
+
+                agent.click(session_id, text=text, selector=selector)
+                # Zara's brain handles confirmation naturally
+            except Exception as e:
+                print(f"[WebAgent] Click error: {e}")
+
+        threading.Thread(target=click_thread, daemon=True).start()
 
     @classmethod
     def process_multimodal_input(cls, file_path: str) -> None:

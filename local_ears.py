@@ -1,10 +1,11 @@
 """Friday Ears — Continuous background listener with Silero VAD + Groq Whisper.
 
-Enhancements:
-- Dynamic VAD threshold (lower when Friday is talking)
-- Frequency guard prevents self-interruption
-- Memory-based transcription (no disk I/O)
-- Faster silence timeout (0.7s)
+Complete rewrite with:
+- Proper circular buffer (never miss first words)
+- Smart wake word removal
+- Garbage character filtering
+- No duplicate code
+- Reliable VAD calibration
 """
 
 import pyaudio
@@ -57,31 +58,32 @@ def _get_mic_index(pa: pyaudio.PyAudio) -> int | None:
                 continue
             if any(hw in name for hw in ("Array", "Realtek", "Built-in", "Microphone")):
                 return i
-    return None
+    return 0  # Default to first available
 
 
 class ContinuousListener:
-    """Always-on VAD listener with smart interruption handling."""
+    """Always-on VAD listener with proper circular buffer."""
 
     CHUNK = 512
     FORMAT = pyaudio.paInt16
     CHANNELS = 1
     RATE = 16000
-    SILENCE_TIMEOUT = 0.7       # Faster response - was 1.2
-    PRE_BUFFER = 0.3            # Pop filter - was 0.5
-    MIN_SPEECH_DURATION = 0.5
-    VAD_THRESHOLD_NORMAL = 0.85
-    VAD_THRESHOLD_TALKING = 0.70  # Less sensitive when Friday is speaking
-    TTS_FREQ_RANGE = (190, 230)   # Friday's voice frequency range
+    SILENCE_TIMEOUT = 0.7
+    PRE_BUFFER = 0.1
+    MIN_SPEECH_DURATION = 0.4
+    CIRCULAR_BUFFER_SECONDS = 2.5
 
     def __init__(self, ui=None):
         self.ui = ui
         self.result_queue: Queue = Queue()
         self._thread: threading.Thread | None = None
         self._running = False
-        self._boot_time = time.time()
         self._last_interrupt_time = 0
-        self._interrupt_cooldown = 2.0  # Seconds between interrupts
+        self._interrupt_cooldown = 1.5
+
+        # Dynamic thresholds - will be calibrated
+        self.VAD_THRESHOLD_NORMAL = 0.82
+        self.VAD_THRESHOLD_TALKING = 0.65
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -89,36 +91,120 @@ class ContinuousListener:
         self._running = True
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
-        print("[Ear] Continuous listener started (enhanced).")
+        print("[Ear] Continuous listener started.")
 
     def stop(self) -> None:
         self._running = False
 
     def _calibrate_microphone(self, pa, stream) -> None:
-        """Calibrate VAD threshold based on actual room noise."""
-        print("[Ear] Calibrating microphone... Please remain silent for 3 seconds.")
+        """Calibrate VAD threshold based on room noise."""
+        print("[Ear] Calibrating microphone... (stay silent)")
 
-        noise_samples = []
-        for _ in range(30):  # 3 seconds at 10 chunks per second
+        noise_levels = []
+        for _ in range(40):  # 4 seconds
             try:
                 data = stream.read(self.CHUNK, exception_on_overflow=False)
                 pcm = np.frombuffer(data, dtype=np.int16)
-                noise_samples.append(np.abs(pcm).mean())
+                noise_levels.append(np.abs(pcm).mean())
             except Exception:
                 pass
+            time.sleep(0.1)
 
-        if noise_samples:
-            avg_noise = np.mean(noise_samples)
+        if noise_levels:
+            avg_noise = np.mean(noise_levels)
+            # Set thresholds based on noise floor
             self.VAD_THRESHOLD_NORMAL = max(
-                0.75, min(0.90, 0.80 + avg_noise / 10000))
+                0.75, min(0.88, 0.78 + avg_noise / 8000))
             self.VAD_THRESHOLD_TALKING = max(
-                0.55, self.VAD_THRESHOLD_NORMAL - 0.15)
+                0.55, self.VAD_THRESHOLD_NORMAL - 0.12)
             print(
-                f"[Ear] Calibrated - Noise floor: {avg_noise:.1f}, Threshold: {self.VAD_THRESHOLD_NORMAL:.2f}")
+                f"[Ear] Calibrated - Noise: {avg_noise:.1f}, Normal: {self.VAD_THRESHOLD_NORMAL:.2f}, Talking: {self.VAD_THRESHOLD_TALKING:.2f}")
+
+    def _clean_transcription(self, text: str) -> str | None:
+        """Clean and validate transcribed text."""
+        if not text or len(text) < 2:
+            return None
+
+        # Remove wake words
+        wake_words = ["zara", "hey zara",
+                      "okay zara", "hi zara", "hello zara"]
+        text_lower = text.lower().strip()
+
+        for wake in wake_words:
+            if text_lower.startswith(wake):
+                text = text[len(wake):].strip()
+                text = text.lstrip(",.!?;: ")
+                print(f"[Ear] Wake word removed: '{text}'")
+                break
+
+        # Handle just "Zara" (catchall if it wasn't in the list)
+        if text_lower.startswith("zara"):
+            text = text[4:].strip().lstrip(",.!?;: ")
+            print(f"[Ear] 'Zara' removed: '{text}'")
+
+        # Clean non-ASCII garbage
+        ascii_chars = [c for c in text if ord(c) < 128]
+        if len(ascii_chars) == 0:
+            return None
+
+        ascii_ratio = len(ascii_chars) / len(text) if text else 0
+        if ascii_ratio < 0.6:
+            cleaned = ''.join(ascii_chars).strip()
+            if len(cleaned) < 3:
+                return None
+            print(f"[Ear] Cleaned non-ASCII: '{text[:30]}...' -> '{cleaned}'")
+            text = cleaned
+
+        # Stop commands
+        stop_commands = ["stop", "shut up", "quiet",
+                         "silence", "enough", "be quiet", "hush", "shhh"]
+        if text.lower().strip().rstrip(".!?") in stop_commands:
+            local_voice.interrupt()
+            print("[Ear] Stop command detected")
+            return None
+
+        # Hallucination filter
+        hallucinations = ["thank you", "thanks", "thanks for watching", "bye", "you",
+                          "the end", "subscribe", "...", "um", "hmm", "captions", "subtitle"]
+        if text.lower().strip().rstrip(".!?,") in hallucinations:
+            print(f"[Ear] Hallucination filtered: '{text}'")
+            return None
+
+        return text.strip()
+
+    def _should_interrupt(self, pcm: np.ndarray, confidence: float) -> bool:
+        """Determine if we should interrupt Zara."""
+        if confidence < 0.65:
+            return False
+
+        energy = np.sqrt(np.mean(pcm.astype(np.float32) ** 2))
+        if energy < 400:
+            return False
+
+        fft = np.fft.rfft(pcm)
+        if len(fft) == 0:
+            return False
+
+        freqs = np.fft.rfftfreq(len(pcm), 1.0 / self.RATE)
+        fft_magnitude = np.abs(fft)
+        dominant_freq = freqs[np.argmax(fft_magnitude)]
+
+        # Human voice range: 85-400 Hz
+        if 85 < dominant_freq < 400:
+            now = time.time()
+            if now - self._last_interrupt_time > self._interrupt_cooldown:
+                self._last_interrupt_time = now
+                return True
+
+        return False
 
     def _loop(self) -> None:
         pa = pyaudio.PyAudio()
         mic_idx = _get_mic_index(pa)
+
+        if mic_idx is None:
+            print("[Ear] ERROR: No microphone found!")
+            return
 
         stream = pa.open(
             format=self.FORMAT, channels=self.CHANNELS,
@@ -129,162 +215,127 @@ class ContinuousListener:
 
         self._calibrate_microphone(pa, stream)
         vad = _get_vad()
-        print("[Ear] ALWAYS LISTENING - Circular buffer active...")
 
-        CIRCULAR_BUFFER_SECONDS = 3.0
-        circular_buffer_size = int(
-            self.RATE / self.CHUNK * CIRCULAR_BUFFER_SECONDS)
+        circular_size = int(self.RATE / self.CHUNK *
+                            self.CIRCULAR_BUFFER_SECONDS)
         circular_buffer = []
+
+        print("[Ear] Listening... (speak naturally)")
+        print("[Ear] DEBUG: VAD loaded, circular buffer ready")
 
         while self._running:
             frames = []
+            circular_buffer.clear()
             has_started = False
             speech_duration = 0.0
             silence_duration = 0.0
             vocalizing_accum = 0.0
-            consecutive_speech_frames = 0
+            speech_frames = 0
 
             while self._running:
                 try:
                     data = stream.read(self.CHUNK, exception_on_overflow=False)
-                except Exception:
+                except Exception as e:
+                    print(f"[Ear] Stream read error: {e}")
                     break
 
+                # Maintain circular buffer
                 circular_buffer.append(data)
-                if len(circular_buffer) > circular_buffer_size:
+                if len(circular_buffer) > circular_size:
                     circular_buffer.pop(0)
 
                 pcm = np.frombuffer(data, dtype=np.int16)
                 tensor = torch.from_numpy(pcm.astype(np.float32) / 32768.0)
                 confidence = vad(tensor, self.RATE).item()
 
-                is_friday_talking = getattr(state.is_talking, 'value', False)
+                is_zara_talking = getattr(state.is_talking, 'value', False)
 
-                if is_friday_talking:
-                    energy = np.sqrt(np.mean(pcm.astype(np.float32) ** 2))
-                    if confidence > 0.70 and energy > 500:
-                        fft = np.fft.rfft(pcm)
-                        freqs = np.fft.rfftfreq(len(pcm), 1.0 / self.RATE)
-                        if len(fft) > 0:
-                            fft_magnitude = np.abs(fft)
-                            dominant_freq = freqs[np.argmax(fft_magnitude)]
-                            if 85 < dominant_freq < 400:
-                                now = time.time()
-                                if now - self._last_interrupt_time > self._interrupt_cooldown:
-                                    local_voice.interrupt()
-                                    self._last_interrupt_time = now
-                                    print(
-                                        f"[Ear] Interrupted — human voice at {dominant_freq:.1f}Hz, energy: {energy:.0f}")
-                                    consecutive_speech_frames = 0
+                # INTERRUPTION CHECK
+                if is_zara_talking:
+                    if self._should_interrupt(pcm, confidence):
+                        local_voice.interrupt()
+                        print(f"[Ear] Interrupted Zara")
                     continue
 
-                if confidence > self.VAD_THRESHOLD_NORMAL:
-                    consecutive_speech_frames += 1
-                    if consecutive_speech_frames >= 3:
+                # NORMAL LISTENING
+                threshold = self.VAD_THRESHOLD_NORMAL
+
+                # DEBUG: Print confidence occasionally
+                if confidence > 0.5:
+                    print(
+                        f"[Ear] DEBUG: High confidence detected: {confidence:.2f}")
+
+                if confidence > threshold:
+                    speech_frames += 1
+
+                    # Need consecutive frames to confirm speech
+                    if speech_frames >= 2:
                         vocalizing_accum += self.CHUNK / self.RATE
-                        if vocalizing_accum >= 0.05:
+
+                        if vocalizing_accum >= self.PRE_BUFFER:
                             if not has_started:
                                 has_started = True
-                                frames = list(circular_buffer) + frames
+                                # PREPEND circular buffer!
+                                frames = list(circular_buffer)
                                 if self.ui:
                                     self.ui.set_state("LISTENING")
+                                print(
+                                    f"[Ear] DEBUG: Speech started! Captured {len(circular_buffer)} pre-frames")
 
                             speech_duration += self.CHUNK / self.RATE
                             silence_duration = 0.0
                             frames.append(data)
                 else:
-                    consecutive_speech_frames = 0
+                    speech_frames = 0
                     if has_started:
                         frames.append(data)
                         silence_duration += self.CHUNK / self.RATE
                         if silence_duration > self.SILENCE_TIMEOUT:
+                            print(
+                                f"[Ear] DEBUG: Silence timeout, processing {len(frames)} frames")
                             break
                     else:
                         vocalizing_accum = 0.0
 
+            # Process captured speech
             if not frames or speech_duration < self.MIN_SPEECH_DURATION:
+                print("[Ear] DEBUG: Not enough speech, skipping")
                 continue
 
-            total_energy = 0
-            for frame in frames:
-                pcm = np.frombuffer(frame, dtype=np.int16)
-                total_energy += np.sqrt(np.mean(pcm.astype(np.float32) ** 2))
+            # Check audio energy
+            total_energy = sum(np.sqrt(np.mean(np.frombuffer(
+                f, dtype=np.int16).astype(np.float32) ** 2)) for f in frames)
             avg_energy = total_energy / len(frames)
-
-            if avg_energy < 100:
-                print(
-                    f"[Ear] Discarding low-energy audio (energy: {avg_energy:.0f})")
+            if avg_energy < 80:
+                print(f"[Ear] Low energy ({avg_energy:.0f}), discarding")
                 continue
 
+            # Transcribe
+            print(f"[Ear] DEBUG: Transcribing {len(frames)} frames...")
             text = self._transcribe_memory(frames, pa)
+            print(f"[Ear] DEBUG: Raw transcription: '{text}'")
 
-            if text and len(text) >= 3:
-                # SMARTER WAKE WORD REMOVAL
-                wake_words = ["friday", "hey friday",
-                              "okay friday", "hi friday", "hello friday"]
-                text_lower = text.lower()
+            if not text:
+                print("[Ear] DEBUG: No transcription returned")
+                continue
 
-                # Only remove wake word if it appears at the very start.
-                for wake in wake_words:
-                    if text_lower.startswith(wake):
-                        text = text[len(wake):].strip()
-                        text = text.lstrip(",.!?;: ")
-                        print(
-                            f"[Ear] Removed wake word '{wake}', command: '{text}'")
-                        break
+            # Clean and validate
+            cleaned = self._clean_transcription(text)
+            print(f"[Ear] DEBUG: Cleaned: '{cleaned}'")
 
-                if text_lower.startswith("friday") and not any(
-                        text_lower.startswith(w) for w in wake_words):
-                    text = text[6:].strip().lstrip(",.!?;: ")
-                    print(f"[Ear] Removed 'Friday', command: '{text}'")
+            if not cleaned:
+                print("[Ear] DEBUG: Transcription filtered out")
+                continue
 
-                # DISCARD GIBBERISH BEFORE PROCESSING
-                ascii_count = sum(1 for c in text if ord(c) < 128)
-                if len(text) > 0:
-                    ascii_ratio = ascii_count / len(text)
-                    if ascii_ratio < 0.5:
-                        print(
-                            f"[Ear] Discarding non-ASCII gibberish: '{text}' "
-                            f"(ASCII ratio: {ascii_ratio:.2f})")
-                        continue
-                    if ascii_ratio < 0.9:
-                        cleaned = ''.join(c for c in text if ord(c) < 128)
-                        print(
-                            f"[Ear] Cleaned non-ASCII: '{text}' -> '{cleaned}'")
-                        text = cleaned
-
-                STOP_COMMANDS = [
-                    "stop", "shut up", "quiet", "silence", "enough",
-                    "be quiet", "hush", "shhh", "stfu"
-                ]
-                text_stripped = text.lower().strip().rstrip(".!?")
-                if text_stripped in STOP_COMMANDS:
-                    local_voice.interrupt()
-                    print("[Ear] Stop command detected")
-                    continue
-
-                HALLUCINATIONS = [
-                    "thank you", "thanks", "thanks for watching", "bye",
-                    "you", "the end", "subscribe", "silence", "...", "um",
-                    "hmm", "ਸ੍ਰੇ", "োরে", "sequestação"
-                ]
-                if text_stripped in HALLUCINATIONS or len(text_stripped) < 3:
-                    print(f"[Ear] Discarding hallucination: '{text}'")
-                    continue
-
-                stripped = text.strip()
-                if stripped.isdigit() or len(set(stripped.replace(" ", ""))) <= 1:
-                    continue
-
-                print(f"\nYou: {text}")
-                self.result_queue.put(text)
+            print(f"\n🗣️ You: {cleaned}")
+            self.result_queue.put(cleaned)
 
         stream.stop_stream()
         stream.close()
         pa.terminate()
 
     def _transcribe_memory(self, frames: list, pa: pyaudio.PyAudio) -> str:
-        """Transcribe directly from memory - no disk I/O."""
+        """Transcribe directly from memory."""
         if not GROQ_API_KEY:
             print("[Ear] GROQ_API_KEY missing")
             return ""
@@ -302,21 +353,19 @@ class ContinuousListener:
                 "https://api.groq.com/openai/v1/audio/transcriptions",
                 headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
                 files={"file": ("audio.wav", wav_buffer, "audio/wav")},
-                data={"model": "whisper-large-v3"},
+                data={"model": "whisper-large-v3", "language": "en"},
                 timeout=15,
             )
             if resp.status_code == 200:
                 return resp.json().get("text", "").strip()
             else:
-                print(
-                    f"[Ear] Groq error {resp.status_code}: {resp.text[:100]}")
+                print(f"[Ear] Groq error {resp.status_code}")
                 return ""
         except Exception as e:
             print(f"[Ear] Transcription error: {e}")
             return ""
 
 
-_TTS_DIR = os.path.dirname(os.path.abspath(__file__))
 _singleton = None
 
 

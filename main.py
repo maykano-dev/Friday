@@ -33,8 +33,8 @@ sandbox = None
 
 
 def get_greeting() -> str:
-    """Ask Friday's brain to generate a unique greeting."""
-    boot_prompt = "SYSTEM_BOOT: Give me a unique, concise, and witty one-sentence greeting."
+    """Ask Zara's brain to generate a unique greeting."""
+    boot_prompt = "SYSTEM_BOOT: Give me a unique, concise, and confident one-sentence startup greeting as Zara."
     return friday_core.generate_response(boot_prompt)
 
 
@@ -57,7 +57,7 @@ def _process_utterance(text: str, proactive) -> None:
         proactive.notify_user_spoke()
 
     friday_reply = friday_core.generate_response(text)
-    print(f"Friday: {friday_reply}")
+    print(f"Zara: {friday_reply}")
 
     time.sleep(0.8)
     if ui:
@@ -84,7 +84,7 @@ def run_friday():
         print(
             "[System WARNING: 'keyboard' module not installed. Global Hotkey disabled.]")
 
-    print("\n[System: Booting Apex Friday Core...]")
+    print("\n[System: Booting Zara Core...]")
 
     # ── 1. Boot UI ──────────────────────────────────────────────────────
     ui = NeuralVisualizer()
@@ -124,13 +124,13 @@ def run_friday():
     # Check for session resume
     resume_greeting = session_mgr.get_resume_greeting() if session_mgr else None
     if resume_greeting:
-        print(f"Friday: {resume_greeting}")
+        print(f"Zara: {resume_greeting}")
         ui.set_state("TALKING")
         ui.set_subtitle_text(resume_greeting)
         local_voice.speak(resume_greeting)
     else:
         greeting = get_greeting()
-        print(f"Friday: {greeting}")
+        print(f"Zara: {greeting}")
         ui.set_state("TALKING")
         ui.set_subtitle_text(greeting)
         local_voice.speak(greeting)
@@ -158,11 +158,12 @@ def run_friday():
             # Check if the listener has a new transcription
             try:
                 user_text = listener.result_queue.get_nowait()
+                print(f"[Main] DEBUG: Got text from queue: '{user_text}'")
             except Empty:
                 user_text = None
 
             if user_text:
-                # Process on a background thread so we don't block the poll
+                print(f"[Main] DEBUG: Processing: '{user_text}'")
                 threading.Thread(
                     target=_process_utterance,
                     args=(user_text, proactive),
@@ -173,7 +174,7 @@ def run_friday():
             time.sleep(0.01)
 
     except KeyboardInterrupt:
-        print("\n[System: Shutting down Friday...]")
+        print("\n[System: Shutting down Zara...]")
 
         try:
             state_data = [card.to_dict() for card in ui.context_cards]
