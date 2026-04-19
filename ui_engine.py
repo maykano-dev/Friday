@@ -228,13 +228,35 @@ class NeuralVisualizer:
                     print(f"[UI] File dropped: {event.file}")
                     self.target_wing_open_ratio = 1.0
                     self.hover_active = False
-                    try:
-                        import action_engine
-                        action_engine.ActionExecutor.process_multimodal_input(
-                            event.file)
-                        print(f"[UI] Successfully processed: {event.file}")
-                    except Exception as e:
-                        print(f"[UI] Error processing file: {e}")
+
+                    # IMMEDIATE VISUAL FEEDBACK
+                    self.context_cards.append(ContextCard(
+                        "TEXT",
+                        f"📁 Processing: {os.path.basename(event.file)}...",
+                        label="File Import"
+                    ))
+
+                    # Process in background thread
+                    import threading
+
+                    def process_file():
+                        try:
+                            import action_engine
+                            action_engine.ActionExecutor.process_multimodal_input(
+                                event.file)
+                            # Update card on success
+                            for card in self.context_cards:
+                                if f"Processing: {os.path.basename(event.file)}" in card.content:
+                                    card.content = f"✅ Ready: {os.path.basename(event.file)}"
+                                    card.label = "File Ready"
+                        except Exception as e:
+                            print(f"[UI] Error processing file: {e}")
+                            for card in self.context_cards:
+                                if f"Processing: {os.path.basename(event.file)}" in card.content:
+                                    card.content = f"❌ Failed: {os.path.basename(event.file)}"
+                                    card.label = "Error"
+
+                    threading.Thread(target=process_file, daemon=True).start()
                 elif event.type == getattr(pygame, "DROPTEXT", 4096):
                     print(f"[UI] Text dropped: {event.text[:100]}")
                     self.target_wing_open_ratio = 1.0

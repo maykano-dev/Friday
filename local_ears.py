@@ -174,11 +174,13 @@ class ContinuousListener:
 
     def _should_interrupt(self, pcm: np.ndarray, confidence: float) -> bool:
         """Determine if we should interrupt Zara."""
-        if confidence < 0.65:
+        # Require HIGHER confidence when Zara is talking
+        if confidence < 0.75:  # ← Increased from 0.65
             return False
 
+        # Require MORE energy (voice is louder than background music)
         energy = np.sqrt(np.mean(pcm.astype(np.float32) ** 2))
-        if energy < 400:
+        if energy < 800:  # ← Increased from 400
             return False
 
         fft = np.fft.rfft(pcm)
@@ -189,11 +191,25 @@ class ContinuousListener:
         fft_magnitude = np.abs(fft)
         dominant_freq = freqs[np.argmax(fft_magnitude)]
 
+        # Check if the sound has harmonics (music has rich harmonics, voice is simpler)
+        # Calculate spectral flatness - voice is less flat than music
+        if len(fft_magnitude) > 10:
+            spectral_flatness = np.exp(np.mean(np.log(fft_magnitude + 1e-10))) / (
+                np.mean(fft_magnitude) + 1e-10)
+
+            # Music tends to have higher spectral flatness (> 0.3)
+            # Voice is more peaked (lower flatness)
+            if spectral_flatness > 0.25:
+                print(
+                    f"[Ear] Detected music (flatness: {spectral_flatness:.2f}) - ignoring")
+                return False
+
         # Human voice range: 85-400 Hz
         if 85 < dominant_freq < 400:
             now = time.time()
             if now - self._last_interrupt_time > self._interrupt_cooldown:
                 self._last_interrupt_time = now
+                print(f"[Ear] Human voice detected at {dominant_freq:.1f}Hz")
                 return True
 
         return False
@@ -223,6 +239,9 @@ class ContinuousListener:
         print("[Ear] Listening... (speak naturally)")
         print("[Ear] DEBUG: VAD loaded, circular buffer ready")
 
+        # After Zara finishes speaking, add a cooldown
+        was_talking = False
+
         while self._running:
             frames = []
             circular_buffer.clear()
@@ -250,15 +269,31 @@ class ContinuousListener:
 
                 is_zara_talking = getattr(state.is_talking, 'value', False)
 
-                # INTERRUPTION CHECK
                 if is_zara_talking:
+                    was_talking = True
+                    # INTERRUPTION CHECK
                     if self._should_interrupt(pcm, confidence):
                         local_voice.interrupt()
                         print(f"[Ear] Interrupted Zara")
                     continue
+                elif was_talking:
+                    # Zara just finished talking - add a short cooldown
+                    was_talking = False
+                    time.sleep(0.3)  # 300ms cooldown for echo to dissipate
+                    # Clear any audio buffers
+                    circular_buffer.clear()
+                    continue
 
                 # NORMAL LISTENING
-                threshold = self.VAD_THRESHOLD_NORMAL
+                media_is_playing = getattr(state.media_playing, 'value', False)
+
+                # If media is playing, be MORE selective about what counts as speech
+                if media_is_playing:
+                    threshold = self.VAD_THRESHOLD_NORMAL + 0.05  # Stricter
+                    min_speech_frames = 5  # Need more consecutive frames
+                else:
+                    threshold = self.VAD_THRESHOLD_NORMAL
+                    min_speech_frames = 2
 
                 # DEBUG: Print confidence occasionally
                 if confidence > 0.5:
@@ -269,7 +304,7 @@ class ContinuousListener:
                     speech_frames += 1
 
                     # Need consecutive frames to confirm speech
-                    if speech_frames >= 2:
+                    if speech_frames >= min_speech_frames:
                         vocalizing_accum += self.CHUNK / self.RATE
 
                         if vocalizing_accum >= self.PRE_BUFFER:

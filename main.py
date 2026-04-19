@@ -90,6 +90,62 @@ def run_friday():
     ui = NeuralVisualizer()
     ui.start()
 
+    # ── CHECK FOR FIRST RUN / ONBOARDING ─────────────────────────────
+    from onboarding_ui import OnboardingUI, UserProfile
+    import pygame
+
+    profile = UserProfile.load()
+
+    if not profile:
+        print("[System] First run detected - starting onboarding...")
+
+        # Create a separate window for onboarding
+        onboarding_screen = pygame.display.set_mode(
+            (800, 600), pygame.RESIZABLE)
+        pygame.display.set_caption("Zara Setup")
+
+        onboarding = OnboardingUI(800, 600)
+        onboarding_complete = False
+
+        def on_onboarding_complete():
+            nonlocal onboarding_complete
+            onboarding_complete = True
+            print(
+                f"[System] Onboarding complete. Welcome, {onboarding.profile.name}!")
+
+        onboarding.on_complete = on_onboarding_complete
+
+        clock = pygame.time.Clock()
+
+        # Onboarding loop
+        while not onboarding_complete:
+            dt = clock.tick(60) / 1000.0
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    pygame.quit()
+                    return
+                elif event.type == pygame.VIDEORESIZE:
+                    onboarding.width = event.w
+                    onboarding.height = event.h
+
+                onboarding.handle_event(event)
+
+            onboarding.update(dt)
+
+            # Clear screen
+            onboarding_screen.fill((10, 12, 16))
+
+            # Render onboarding
+            onboarding.render(onboarding_screen)
+
+            pygame.display.flip()
+
+        # Onboarding complete - reset window for main UI
+        pygame.display.set_caption("Zara Neural Core")
+        # Ensure NeuralVisualizer can take over the screen if needed
+        # (NeuralVisualizer._run_loop will create its own screen, but let's be safe)
+
     if os.path.exists("resume_state.json"):
         try:
             with open("resume_state.json", "r", encoding="utf-8") as f:

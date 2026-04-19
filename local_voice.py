@@ -10,6 +10,8 @@ import threading
 from queue import Queue, Empty
 
 import pygame
+import pyautogui
+import time
 import state
 
 # ── Edge-TTS ────────────────────────────────────────────────────────────────
@@ -39,6 +41,52 @@ _audio_queue: Queue = Queue()   # rendered .mp3 paths waiting to be played
 _interrupted = threading.Event()
 _renderer_thread: threading.Thread | None = None
 _player_thread:   threading.Thread | None = None
+
+# ── Ducking (Volume Control) ────────────────────────────────────────────────
+_media_volume_original = 60
+_ducking_active = False
+_ducking_lock = threading.Lock()
+
+
+def _lower_media_volume():
+    """Lower system/media volume when Zara starts speaking."""
+    global _media_volume_original, _ducking_active
+
+    with _ducking_lock:
+        if _ducking_active:
+            return
+
+        try:
+            # Simple approach: Press volume down 8 times
+            for _ in range(8):
+                pyautogui.press("volumedown")
+                time.sleep(0.02)
+
+            _media_volume_original = 60  # Assume original was ~60%
+            _ducking_active = True
+            print("[Voice] Media volume lowered for ducking")
+        except Exception as e:
+            print(f"[Voice] Ducking failed: {e}")
+
+
+def _restore_media_volume():
+    """Restore media volume after Zara finishes speaking."""
+    global _ducking_active
+
+    with _ducking_lock:
+        if not _ducking_active:
+            return
+
+        try:
+            # Press volume up 8 times to restore
+            for _ in range(8):
+                pyautogui.press("volumeup")
+                time.sleep(0.02)
+
+            _ducking_active = False
+            print("[Voice] Media volume restored")
+        except Exception as e:
+            print(f"[Voice] Volume restore failed: {e}")
 
 
 def _sync_talking_state(channels=None) -> None:
@@ -183,13 +231,16 @@ def _player_worker() -> None:
             _audio_queue.task_done()
             _sync_talking_state(channels)
 
+            # CHECK IF ALL AUDIO IS DONE - RESTORE VOLUME
             if _audio_queue.empty() and _text_queue.empty():
                 pygame.mixer.stop()  # Ensure hardware is clear
                 state.set_talking(False)  # Force mic to open
+                _restore_media_volume()  # ← RESTORE VOLUME WHEN DONE
 
         except Exception as e:
             print(f"[Friday TTS] player crash: {e}")
             state.set_talking(False)
+            _restore_media_volume()  # ← Also restore on crash
 
 
 # ── Thread Lifecycle ────────────────────────────────────────────────────────
@@ -256,6 +307,10 @@ def speak(text: str) -> None:
 
     _interrupted.clear()
     state.set_talking(True)
+
+    # LOWER MEDIA VOLUME BEFORE SPEAKING
+    _lower_media_volume()
+
     _ensure_workers()
     _text_queue.put(str(text).strip())
     _sync_talking_state()

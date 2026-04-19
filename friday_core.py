@@ -428,7 +428,7 @@ def generate_response(user_text: str) -> str:
 
     # ========== MUSIC HANDLER ==========
     def _handle_play_music(text: str) -> Optional[str]:
-        """Handle music playback with artist/song extraction."""
+        """Handle music playback with smart app/web fallback."""
         import re
         import json
         import action_engine
@@ -436,18 +436,20 @@ def generate_response(user_text: str) -> str:
         text_lower = text.lower()
 
         # Extract artist/song
-        # Patterns: "play Stonebwoy", "play some Drake", "put on Burna Boy"
-        artist_match = re.search(
-            r'(?:play|put on|play some)\s+(.+?)(?:\s+on\s+|\s+by\s+|\s*$)', text_lower)
+        artist_match = None
+        patterns = [
+            r'play\s+(.+?)(?:\s+on\s+|\s+by\s+|\s*$)',
+            r'put on\s+(.+?)(?:\s+on\s+|\s+by\s+|\s*$)',
+            r'play some\s+(.+?)(?:\s+on\s+|\s+by\s+|\s*$)',
+            r'(.+?)\s+on\s+(?:spotify|youtube)',
+        ]
 
-        # Extract from "Stonebwoy on Spotify"
-        if not artist_match:
-            artist_match = re.search(
-                r'(.+?)\s+on\s+(?:spotify|youtube)', text_lower)
+        for pattern in patterns:
+            artist_match = re.search(pattern, text_lower)
+            if artist_match:
+                break
 
         query = artist_match.group(1).strip() if artist_match else ""
-
-        # Clean up query - remove "music", "song", etc.
         query = query.replace(" music", "").replace(
             " song", "").replace(" playlist", "").strip()
 
@@ -459,20 +461,40 @@ def generate_response(user_text: str) -> str:
         elif "youtube" in text_lower:
             app = "youtube"
         else:
-            app = "spotify"  # Default to Spotify
+            # If no platform specified, use user's default
+            from user_prefs import get_music_app
+            app = get_music_app()
 
         # Detect action
         if "pause" in text_lower:
             music_action = "pause"
+            response = "Paused, Sir."
         elif "next" in text_lower or "skip" in text_lower:
             music_action = "next"
+            response = "Next track, Sir."
         elif "previous" in text_lower or "go back" in text_lower:
             music_action = "previous"
+            response = "Previous track, Sir."
+        elif "volume up" in text_lower or "turn up" in text_lower:
+            music_action = "volume_up"
+            response = "Volume up, Sir."
+        elif "volume down" in text_lower or "turn down" in text_lower:
+            music_action = "volume_down"
+            response = "Volume down, Sir."
+        elif "mute" in text_lower:
+            music_action = "mute"
+            response = "Muted, Sir."
         elif "play" in text_lower or query:
             music_action = "play"
+            if query:
+                response = f"Playing {query} on {app.title()}, Sir."
+            else:
+                response = f"Playing music on {app.title()}, Sir."
         else:
             music_action = ""
+            response = f"Opening {app.title()}, Sir."
 
+        # Execute the action
         executor = action_engine.ActionExecutor()
         payload = json.dumps({
             "action": "start_app",
@@ -482,16 +504,8 @@ def generate_response(user_text: str) -> str:
         })
         executor.execute_payload(payload)
 
-        if music_action == "pause":
-            return "Paused, Sir."
-        elif music_action == "next":
-            return "Next track."
-        elif music_action == "previous":
-            return "Previous track."
-        elif query:
-            return f"Playing {query} on {app.title()}."
-        else:
-            return f"Opening {app.title()}."
+        # RETURN CONFIRMATION SO ZARA SPEAKS IT
+        return response
 
     # Check if this should use free web tools first
     web_tool_keywords = {

@@ -26,3 +26,4 @@ beautifulsoup4>=4.12.0
 # Friday Enhancement Dependencies
 ollama>=0.1.0
 edge-tts>=6.0.0
+pyautogui>=0.9.54

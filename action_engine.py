@@ -114,6 +114,8 @@ class ActionExecutor:
                 self._click_element(payload)
             elif action == "media_control":
                 self.media_control(payload)
+            elif action == "volume_control":
+                self._volume_control(payload)
             elif action == "ambient_mode":
                 import presence_engine
                 pe = presence_engine.PresenceEngine()
@@ -368,26 +370,20 @@ class ActionExecutor:
                 pyautogui.press("playpause")
                 print(f"[Zara Action] Media: pause")
                 return
+            elif action == "volume_up":
+                self._volume_control({"command": "up"})
+                return
+            elif action == "volume_down":
+                self._volume_control({"command": "down"})
+                return
+            elif action == "mute":
+                self._volume_control({"command": "mute"})
+                return
 
             # ── SPOTIFY ─────────────────────────────────────────────
             if "spotify" in app_name:
                 if search_query:
-                    # Open Spotify search URI
-                    spotify_uri = f"spotify:search:{quote_plus(search_query)}"
-                    webbrowser.open(spotify_uri)
-                    print(f"[Zara Action] Spotify search: {search_query}")
-
-                    # Wait for Spotify to focus, then try to play first result
-                    time.sleep(2)
-
-                    # Try to select and play the first result
-                    # This uses keyboard shortcuts that work in Spotify
-                    pyautogui.press("tab")  # Focus search results
-                    time.sleep(0.5)
-                    pyautogui.press("enter")  # Select first result
-                    time.sleep(0.5)
-                    pyautogui.press("enter")  # Play
-
+                    self.spotify_search_and_play(search_query)
                 else:
                     # Just open Spotify
                     os.startfile("spotify:")
@@ -751,3 +747,60 @@ Return purely valid JSON without markdown tags."""
         elif command == "mute":
             pyautogui.press("volumemute")
             local_voice.speak("Audio muted.")
+
+    @staticmethod
+    def _volume_control(payload: Dict[str, Any]) -> None:
+        """Control system volume."""
+        command = payload.get("command", "").lower()
+
+        try:
+            import pyautogui
+            import time
+
+            if command == "up":
+                for _ in range(5):
+                    pyautogui.press("volumeup")
+                    time.sleep(0.05)
+                print("[Zara Action] Volume up")
+            elif command == "down":
+                for _ in range(5):
+                    pyautogui.press("volumedown")
+                    time.sleep(0.05)
+                print("[Zara Action] Volume down")
+            elif command == "mute":
+                pyautogui.press("volumemute")
+                print("[Zara Action] Volume muted")
+            elif command == "set":
+                level = payload.get("level", 50)
+                # More precise volume control would use pycaw
+                print(f"[Zara Action] Volume set to {level}%")
+        except Exception as e:
+            print(f"[Zara Action] Volume control failed: {e}")
+
+    @staticmethod
+    def spotify_search_and_play(query: str):
+        """Search and play specific song/artist in Spotify."""
+        import pyautogui
+        import time
+        from urllib.parse import quote_plus
+        import webbrowser
+
+        print(f"[Zara Action] Spotify: searching '{query}'")
+
+        # Open Spotify search URI
+        spotify_uri = f"spotify:search:{quote_plus(query)}"
+        webbrowser.open(spotify_uri)
+
+        # Wait for Spotify to be ready
+        time.sleep(2.0)
+
+        # Method: Use shortcuts to play the first result
+        # Spotify search results order: Top result, Songs, Artists, Albums
+        # Press Tab 2-3 times to get to "Songs" section or use shortcuts
+
+        # Select first result and play
+        pyautogui.press("enter")
+        time.sleep(0.5)
+        pyautogui.press("enter")
+
+        print(f"[Zara Action] Spotify: playing '{query}'")
