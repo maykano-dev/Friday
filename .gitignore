@@ -21,7 +21,7 @@ temp_speech_*.mp3
 _tts_chunk_*.mp3
 
 # Databases (local state — don't push)
-friday_brain.db
+Zara_brain.db
 chroma_db/
 
 # PyTorch Hub cache

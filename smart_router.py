@@ -1,4 +1,4 @@
-"""Friday - Smart Model Router (Zero-Cost Edition)
+"""Zara - Smart Model Router (Zero-Cost Edition)
 
 Routes requests to the best FREE endpoint based on availability:
 - Groq API (free tier: 30 req/min, 14,400 req/day)
@@ -6,7 +6,7 @@ Routes requests to the best FREE endpoint based on availability:
 - DuckDuckGo search (free web research)
 - Cached responses (avoid repeat API calls)
 
-Author: Friday Enhancement Package
+Author: Zara Enhancement Package
 """
 
 from __future__ import annotations
@@ -368,5 +368,5 @@ def route_query(query: str, system_prompt: str = "", allow_web: bool = False) ->
     router = get_router()
     response, endpoint = router.route(
         query, system_prompt, allow_web_search=allow_web)
-    print(f"[Friday] Used: {endpoint.value}")
+    print(f"[Zara] Used: {endpoint.value}")
     return response

@@ -1,4 +1,4 @@
-"""Friday - Output Router (Vilberta-inspired smart separation)
+"""Zara - Output Router (Vilberta-inspired smart separation)
 
 Routes LLM output to the appropriate channel:
 - Conversation → Voice (spoken)
@@ -18,7 +18,7 @@ from dataclasses import dataclass
 @dataclass
 class RoutedOutput:
     """Output split into appropriate channels."""
-    spoken: str           # What Friday should say out loud
+    spoken: str           # What Zara should say out loud
     visual: Optional[str]  # What goes to Context Wing
     action: Optional[str]  # JSON action payload if present
     raw_response: str     # Original unprocessed response

@@ -11,14 +11,95 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import subprocess
 import threading
+import time
 from typing import Any, Dict, Optional
 
 import pyautogui
 
 
 SCRIPT_TIMEOUT_SECONDS = 120
+
+
+def is_app_running(app_name: str) -> bool:
+    """Check if an application is running using tasklist."""
+    import subprocess
+    try:
+        # Standardize name for Windows tasklist
+        if not app_name.endswith(".exe"):
+            proc_name = f"{app_name}.exe"
+        else:
+            proc_name = app_name
+            
+        output = subprocess.check_output(
+            f'tasklist /FI "IMAGENAME eq {proc_name}"', 
+            shell=True, 
+            text=True
+        )
+        return proc_name.lower() in output.lower()
+    except:
+        # Fallback to psutil if available
+        try:
+            import psutil
+            for proc in psutil.process_iter(['name']):
+                if app_name.lower() in proc.info['name'].lower():
+                    return True
+        except:
+            pass
+        return False
+
+
+def focus_app(app_name: str) -> bool:
+    """Bring an app to the foreground using multiple methods."""
+    import pyautogui
+    import time
+    
+    try:
+        if "spotify" in app_name.lower():
+            # Use Alt+Tab to switch to Spotify (often more reliable)
+            pyautogui.keyDown("alt")
+            pyautogui.press("tab")
+            pyautogui.keyUp("alt")
+            time.sleep(0.5)
+            return True
+    except:
+        pass
+    
+    # Fallback: try to find window by title
+    try:
+        import pygetwindow as gw
+        windows = gw.getWindowsWithTitle(app_name)
+        if not windows:
+            all_windows = gw.getAllWindows()
+            windows = [w for w in all_windows if app_name.lower() in w.title.lower()]
+            
+        if windows:
+            win = windows[0]
+            if win.isMinimized:
+                win.restore()
+            win.activate()
+            return True
+    except:
+        pass
+    
+    return False
+
+
+def is_app_installed(app_name: str) -> bool:
+    """Check if an application is installed (basic Windows check)."""
+    if "spotify" in app_name.lower():
+        import os
+        app_data = os.getenv("APPDATA")
+        local_app_data = os.getenv("LOCALAPPDATA")
+        # Common Spotify paths
+        paths = [
+            f"{app_data}\\Spotify\\Spotify.exe",
+            f"{local_app_data}\\Microsoft\\WindowsApps\\Spotify.exe"
+        ]
+        return any(os.path.exists(p) for p in paths) or os.path.exists("spotify:")
+    return True  # Default to True for other apps
 
 
 class ActionExecutor:
@@ -244,8 +325,8 @@ class ActionExecutor:
 
         if result.returncode != 0:
             error_msg = result.stderr.strip() or result.stdout.strip()
-            import friday_core
-            friday_core.generate_response(
+            import zara_core
+            zara_core.generate_response(
                 f"The code failed with this error: {error_msg}. Analyze and provide a corrected <EXECUTE> block."
             )
 
@@ -254,11 +335,11 @@ class ActionExecutor:
         attempt = payload.get("attempt", 1)
         if attempt > 3:
             print(f"[Zara Action] verified_execute failed after 3 attempts.")
-            import friday_core
+            import zara_core
             import main
             if main.ui:
                 main.ui.set_bg_task("")
-            friday_core.generate_response(
+            zara_core.generate_response(
                 "The code failed 3 times in the sandbox. Tell the user it failed.")
             return
 
@@ -268,7 +349,7 @@ class ActionExecutor:
             return
 
         import memory_vault
-        import friday_core
+        import zara_core
         import main
 
         if main.ui:
@@ -315,7 +396,7 @@ class ActionExecutor:
                 )
                 if main.ui:
                     main.ui.set_bg_task("")
-                friday_core.generate_response(prompt)
+                zara_core.generate_response(prompt)
 
         except subprocess.TimeoutExpired as e:
             print("[Zara Action] sandbox execution timed out")
@@ -327,112 +408,52 @@ class ActionExecutor:
             )
             if main.ui:
                 main.ui.set_bg_task("")
-            friday_core.generate_response(prompt)
+            zara_core.generate_response(prompt)
 
     @classmethod
     def _start_app(cls, payload: Dict[str, Any]) -> None:
-        """Execute a local application with music/search/play capabilities."""
+        """Execute a local application with smart music handling."""
         app_name = payload.get("app_name", "").lower()
         search_query = payload.get("query", "")
-        # "play", "pause", "next", "previous"
         action = payload.get("music_action", "")
 
-        if not app_name and not action:
-            return
+        print(f"[Zara Action] start_app: app={app_name}, query='{search_query}', action={action}")
 
-        try:
-            import platform
-            import subprocess
-            import webbrowser
-            from urllib.parse import quote_plus
-            import pyautogui
-            import time
-
-            # ── MEDIA CONTROL (no app launch needed) ─────────────────
-            if action == "play_pause":
-                pyautogui.press("playpause")
-                print(f"[Zara Action] Media: play/pause")
-                return
-            elif action == "next":
-                pyautogui.press("nexttrack")
-                print(f"[Zara Action] Media: next track")
-                return
-            elif action == "previous":
-                pyautogui.press("prevtrack")
-                print(f"[Zara Action] Media: previous track")
-                return
-            elif action == "play":
-                # Try to hit play if Spotify is already open
-                pyautogui.press("playpause")
-                print(f"[Zara Action] Media: play")
-                return
-            elif action == "pause":
-                pyautogui.press("playpause")
-                print(f"[Zara Action] Media: pause")
-                return
-            elif action == "volume_up":
-                self._volume_control({"command": "up"})
-                return
-            elif action == "volume_down":
-                self._volume_control({"command": "down"})
-                return
-            elif action == "mute":
-                self._volume_control({"command": "mute"})
-                return
-
-            # ── SPOTIFY ─────────────────────────────────────────────
-            if "spotify" in app_name:
-                if search_query:
-                    self.spotify_search_and_play(search_query)
-                else:
-                    # Just open Spotify
-                    os.startfile("spotify:")
-                    print(f"[Zara Action] opened Spotify")
-
-            # ── YOUTUBE MUSIC ───────────────────────────────────────
-            elif "youtube" in app_name and "music" in app_name:
-                if search_query:
-                    url = f"https://music.youtube.com/search?q={quote_plus(search_query)}"
-                    webbrowser.open(url)
-                    print(
-                        f"[Zara Action] YouTube Music search: {search_query}")
-
-                    # Auto-play first result
-                    time.sleep(3)
-                    pyautogui.press("tab")
-                    pyautogui.press("tab")
-                    pyautogui.press("enter")
-                else:
-                    webbrowser.open("https://music.youtube.com")
-                    print(f"[Zara Action] opened YouTube Music")
-
-            # ── YOUTUBE (regular) ───────────────────────────────────
-            elif "youtube" in app_name:
-                if search_query:
-                    url = f"https://www.youtube.com/results?search_query={quote_plus(search_query)}"
-                    webbrowser.open(url)
-                    print(f"[Zara Action] YouTube search: {search_query}")
-
-                    # Auto-play first result
-                    time.sleep(3)
-                    pyautogui.press("tab")
-                    pyautogui.press("tab")
-                    pyautogui.press("enter")
-                else:
-                    webbrowser.open("https://www.youtube.com")
-                    print(f"[Zara Action] opened YouTube")
-
-            # ── OTHER APPS ──────────────────────────────────────────
-            elif platform.system() == "Windows":
-                os.startfile(app_name)
-                print(f"[Zara Action] started app: {app_name}")
+        # ── SPOTIFY ─────────────────────────────────────────────
+        if "spotify" in app_name:
+            if search_query:
+                # Use vision-guided search and play
+                cls.spotify_search_and_play_with_vision(search_query)
+            elif action == "play_recommended":
+                cls.spotify_play_recommended()
             else:
-                subprocess.Popen(["open" if platform.system()
-                                 == "Darwin" else "xdg-open", app_name])
-                print(f"[Zara Action] started app: {app_name}")
+                os.startfile("spotify:")
+                print("[Zara Action] Opened Spotify")
 
-        except Exception as e:
-            print(f"[Zara Action] start_app failed: {e}")
+        # ── YOUTUBE MUSIC ───────────────────────────────────────
+        elif "youtube" in app_name:
+            import webbrowser
+            if search_query:
+                url = f"https://music.youtube.com/search?q={search_query.replace(' ', '+')}"
+            else:
+                url = "https://music.youtube.com"
+            webbrowser.open(url)
+            print(f"[Zara Action] Opened YouTube Music")
+        
+        # ── APPLE MUSIC ─────────────────────────────────────────
+        elif "apple" in app_name:
+            if platform.system() == "Windows":
+                os.startfile("itms-apps://")
+            else:
+                subprocess.Popen(["open", "-a", "Music"])
+
+        # ── OTHER APPS ──────────────────────────────────────────
+        elif platform.system() == "Windows":
+            os.startfile(app_name)
+            print(f"[Zara Action] started app: {app_name}")
+        else:
+            subprocess.Popen(["open" if platform.system() == "Darwin" else "xdg-open", app_name])
+            print(f"[Zara Action] started app: {app_name}")
 
     @classmethod
     def _web_scrape(cls, payload: Dict[str, Any]) -> None:
@@ -490,7 +511,7 @@ class ActionExecutor:
                 from playwright.sync_api import sync_playwright
                 from playwright_stealth import stealth_sync
                 import json
-                import friday_core
+                import zara_core
                 import re
 
                 with sync_playwright() as p:
@@ -514,7 +535,7 @@ Example format:
 ]
 Return purely valid JSON without markdown tags."""
 
-                    llm_plan_str = friday_core.generate_response(prompt)
+                    llm_plan_str = zara_core.generate_response(prompt)
                     # aggressive json strip
                     import re
                     json_str = re.sub(r'```json\n|```', '',
@@ -725,82 +746,172 @@ Return purely valid JSON without markdown tags."""
     @staticmethod
     def media_control(payload: Dict[str, Any]) -> None:
         command = payload.get("command", "").lower()
-        import local_voice  # Local import to avoid circular issues
-
-        if command == "play_pause":
-            pyautogui.press("playpause")
-            local_voice.speak("Toggled playback.")
-        elif command == "next":
-            pyautogui.press("nexttrack")
-            local_voice.speak("Skipping to the next track.")
-        elif command == "previous":
-            pyautogui.press("prevtrack")
-            local_voice.speak("Going back.")
-        elif command == "volume_up":
-            for _ in range(5):
-                pyautogui.press("volumeup")
-            local_voice.speak("Volume increased.")
-        elif command == "volume_down":
-            for _ in range(5):
-                pyautogui.press("volumedown")
-            local_voice.speak("Volume decreased.")
-        elif command == "mute":
-            pyautogui.press("volumemute")
-            local_voice.speak("Audio muted.")
-
-    @staticmethod
-    def _volume_control(payload: Dict[str, Any]) -> None:
-        """Control system volume."""
-        command = payload.get("command", "").lower()
 
         try:
             import pyautogui
             import time
 
-            if command == "up":
+            if command == "volume_up" or command == "up":
                 for _ in range(5):
                     pyautogui.press("volumeup")
-                    time.sleep(0.05)
+                    time.sleep(0.03)
+                payload["announcement"] = "Volume increased, Sir."
                 print("[Zara Action] Volume up")
-            elif command == "down":
+
+            elif command == "volume_down" or command == "down":
                 for _ in range(5):
                     pyautogui.press("volumedown")
-                    time.sleep(0.05)
+                    time.sleep(0.03)
+                payload["announcement"] = "Volume lowered, Sir."
                 print("[Zara Action] Volume down")
+
             elif command == "mute":
                 pyautogui.press("volumemute")
-                print("[Zara Action] Volume muted")
-            elif command == "set":
-                level = payload.get("level", 50)
-                # More precise volume control would use pycaw
-                print(f"[Zara Action] Volume set to {level}%")
+                payload["announcement"] = "System volume toggled, Sir."
+                print("[Zara Action] Mute")
+
+            elif command == "play_pause":
+                pyautogui.press("playpause")
+                payload["announcement"] = "Toggled playback, Sir."
+                print("[Zara Action] Play/Pause")
+
+            elif command == "next":
+                pyautogui.press("nexttrack")
+                payload["announcement"] = "Next track, Sir."
+                print("[Zara Action] Next")
+
+            elif command == "previous":
+                pyautogui.press("prevtrack")
+                payload["announcement"] = "Previous track, Sir."
+                print("[Zara Action] Previous")
+
         except Exception as e:
-            print(f"[Zara Action] Volume control failed: {e}")
+            print(f"[Zara Action] Media control failed: {e}")
 
     @staticmethod
-    def spotify_search_and_play(query: str):
-        """Search and play specific song/artist in Spotify."""
-        import pyautogui
-        import time
+    def _volume_control(payload: Dict[str, Any]) -> None:
+        """Control system volume."""
+        # Redirect to main media_control for consistency
+        ActionExecutor.media_control(payload)
+
+    @classmethod
+    def spotify_search_and_play_with_vision(cls, query: str):
+        """Use vision to verify and click play."""
+        from zara_eyes import get_eyes
         from urllib.parse import quote_plus
         import webbrowser
+        import pyautogui
+        import time
 
-        print(f"[Zara Action] Spotify: searching '{query}'")
-
-        # Open Spotify search URI
-        spotify_uri = f"spotify:search:{quote_plus(query)}"
+        # Open Spotify search
+        encoded = quote_plus(query)
+        spotify_uri = f"spotify:search:{encoded}"
         webbrowser.open(spotify_uri)
 
-        # Wait for Spotify to be ready
-        time.sleep(2.0)
+        time.sleep(3)
 
-        # Method: Use shortcuts to play the first result
-        # Spotify search results order: Top result, Songs, Artists, Albums
-        # Press Tab 2-3 times to get to "Songs" section or use shortcuts
+        # Ask vision: "Where is the first song?"
+        eyes = get_eyes()
+        context = eyes.look_at()
 
-        # Select first result and play
+        if context:
+            print(f"[Zara] Vision sees: {context.raw_description}")
+
+            # If vision sees search results, try to click
+            if "spotify" in context.active_window.lower():
+                # Use coordinates based on screen size
+                screen_width, screen_height = pyautogui.size()
+                click_x = int(screen_width * 0.15)
+                click_y = int(screen_height * 0.35)
+
+                pyautogui.doubleClick(click_x, click_y)
+                print("[Zara Action] Vision-guided click on first result")
+            else:
+                # Fallback to standard automation if vision is confused
+                cls.spotify_search_and_play(query)
+        else:
+            cls.spotify_search_and_play(query)
+
+    @classmethod
+    def spotify_search_and_play(cls, query: str):
+        """Search and play using simple, reliable keystrokes."""
+        import pyautogui
+        import time
+        import os
+        
+        print(f"[Zara Action] Spotify: searching '{query}'")
+        
+        # Ensure Spotify is focused
+        if not is_app_running("spotify"):
+            os.startfile("spotify:")
+            time.sleep(4)  # Wait for Spotify to fully load
+        else:
+            focus_app("spotify")
+            time.sleep(1)
+        
+        # METHOD 1: Use the actual search box via Ctrl+L
+        pyautogui.hotkey("ctrl", "l")
+        time.sleep(0.5)
+        
+        # Clear existing text
+        pyautogui.hotkey("ctrl", "a")
+        time.sleep(0.2)
+        
+        # Type the query slowly (more reliable)
+        pyautogui.write(query, interval=0.05)
+        time.sleep(0.8)
+        
+        # Press Enter to search
         pyautogui.press("enter")
+        time.sleep(2)  # Wait for results
+        
+        # METHOD 2: Click the first song using coordinates
+        # For most screen resolutions, the first song is around here
+        screen_width, screen_height = pyautogui.size()
+        
+        # First song is typically at ~35% from top, ~15% from left
+        click_x = int(screen_width * 0.15)
+        click_y = int(screen_height * 0.35)
+        
+        # Move there and double-click
+        pyautogui.moveTo(click_x, click_y, duration=0.3)
+        pyautogui.doubleClick()
+        
+        # Wait a moment for playback to start
+        time.sleep(1)
+        
+        # Fallback: Press Tab then Enter
+        pyautogui.press("tab")
+        time.sleep(0.2)
+        pyautogui.press("tab")
+        time.sleep(0.2)
+        pyautogui.press("enter")
+        time.sleep(0.3)
+        pyautogui.press("enter")
+        
+        print(f"[Zara Action] Spotify: playback command sent for '{query}'")
+
+    @classmethod
+    def spotify_play_recommended(cls):
+        """Play user's Discover Weekly or Liked Songs."""
+        import pyautogui
+        import time
+        import os
+
+        if not is_app_running("spotify"):
+            os.startfile("spotify:")
+            time.sleep(3)
+        else:
+            focus_app("spotify")
+            time.sleep(0.5)
+
+        # Click on "Liked Songs" or press Ctrl+L and type "liked"
+        pyautogui.hotkey("ctrl", "l")
+        time.sleep(0.3)
+        pyautogui.write("liked songs")
         time.sleep(0.5)
         pyautogui.press("enter")
+        time.sleep(1)
+        pyautogui.press("enter")  # Play
 
-        print(f"[Zara Action] Spotify: playing '{query}'")
+        print("[Zara Action] Playing Liked Songs")

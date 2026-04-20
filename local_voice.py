@@ -1,4 +1,4 @@
-"""Friday TTS — Edge-TTS with dual-channel pre-loading and zero-gap playback.
+"""Zara TTS — Edge-TTS with dual-channel pre-loading and zero-gap playback.
 
 Enhancements:
 - Aggressive interrupt with full queue flushing
@@ -19,7 +19,7 @@ try:
     import edge_tts
 except ImportError:
     edge_tts = None
-    print("[Friday TTS] WARNING: edge-tts not installed. Run 'pip install edge-tts'.")
+    print("[Zara TTS] WARNING: edge-tts not installed. Run 'pip install edge-tts'.")
 
 VOICE = "en-US-JennyNeural"
 # +5% rate = alert, -2Hz pitch = body/resonance
@@ -42,51 +42,79 @@ _interrupted = threading.Event()
 _renderer_thread: threading.Thread | None = None
 _player_thread:   threading.Thread | None = None
 
-# ── Ducking (Volume Control) ────────────────────────────────────────────────
-_media_volume_original = 60
+# Global ducking state
 _ducking_active = False
 _ducking_lock = threading.Lock()
+_ducking_enabled = False  # DISABLED BY DEFAULT - too buggy
+_startup_complete = False
 
+def enable_ducking():
+    global _ducking_enabled
+    _ducking_enabled = True
+    print("[Voice] Volume ducking enabled")
+
+def disable_ducking():
+    global _ducking_enabled
+    _ducking_enabled = False
+    print("[Voice] Volume ducking disabled")
 
 def _lower_media_volume():
-    """Lower system/media volume when Zara starts speaking."""
-    global _media_volume_original, _ducking_active
-
+    """Lower system volume when Zara starts speaking."""
+    global _ducking_active
+    
+    if not _ducking_enabled:
+        return
+    
     with _ducking_lock:
         if _ducking_active:
             return
-
+        
         try:
-            # Simple approach: Press volume down 8 times
-            for _ in range(8):
+            import pyautogui
+            import time
+            
+            # Simple: just press volume down a few times
+            for _ in range(5):
                 pyautogui.press("volumedown")
-                time.sleep(0.02)
-
-            _media_volume_original = 60  # Assume original was ~60%
+                time.sleep(0.03)
+            
             _ducking_active = True
-            print("[Voice] Media volume lowered for ducking")
+            print("[Voice] Volume ducked")
+            
         except Exception as e:
             print(f"[Voice] Ducking failed: {e}")
-
 
 def _restore_media_volume():
     """Restore media volume after Zara finishes speaking."""
     global _ducking_active
-
+    
+    if not _ducking_enabled:
+        return
+    
     with _ducking_lock:
         if not _ducking_active:
             return
-
+        
         try:
-            # Press volume up 8 times to restore
-            for _ in range(8):
+            import pyautogui
+            import time
+            
+            for _ in range(5):
                 pyautogui.press("volumeup")
-                time.sleep(0.02)
-
+                time.sleep(0.03)
+            
             _ducking_active = False
-            print("[Voice] Media volume restored")
+            print("[Voice] Volume restored")
+            
         except Exception as e:
-            print(f"[Voice] Volume restore failed: {e}")
+            print(f"[Voice] Restore failed: {e}")
+
+
+def mark_startup_complete():
+    """Flag that the initial greeting is done."""
+    global _startup_complete
+    _startup_complete = True
+    print("[Voice] Startup complete - ducking enabled")
 
 
 def _sync_talking_state(channels=None) -> None:
@@ -156,7 +184,7 @@ def _renderer_worker() -> None:
                     buf.write(chunk)
                 buf.seek(0)
             except Exception as e:
-                print(f"[Friday TTS] render error: {e}")
+                print(f"[Zara TTS] render error: {e}")
                 _text_queue.task_done()
                 _sync_talking_state()
                 continue
@@ -171,7 +199,7 @@ def _renderer_worker() -> None:
             _sync_talking_state()
 
         except Exception as e:
-            print(f"[Friday TTS] renderer crash: {e}")
+            print(f"[Zara TTS] renderer crash: {e}")
             _sync_talking_state()
 
 
@@ -226,7 +254,7 @@ def _player_worker() -> None:
                         pygame.time.wait(10)
 
             except Exception as e:
-                print(f"[Friday TTS] playback error: {e}")
+                print(f"[Zara TTS] playback error: {e}")
 
             _audio_queue.task_done()
             _sync_talking_state(channels)
@@ -238,7 +266,7 @@ def _player_worker() -> None:
                 _restore_media_volume()  # ← RESTORE VOLUME WHEN DONE
 
         except Exception as e:
-            print(f"[Friday TTS] player crash: {e}")
+            print(f"[Zara TTS] player crash: {e}")
             state.set_talking(False)
             _restore_media_volume()  # ← Also restore on crash
 
@@ -261,7 +289,7 @@ _ensure_workers()
 # ── Public API ──────────────────────────────────────────────────────────────
 
 def interrupt() -> None:
-    """Immediately silence Friday, flush all queues aggressively."""
+    """Immediately silence Zara, flush all queues aggressively."""
     _interrupted.set()
 
     # Stop all mixer channels — VIOLENT SILENCE
@@ -297,19 +325,25 @@ def interrupt() -> None:
 
 
 def speak(text: str) -> None:
-    """Queue a sentence for rendering + playback.
-
-    The renderer downloads audio for the NEXT sentence while the player
-    is still speaking the CURRENT one — zero gap between segments.
-    """
+    """Queue a sentence for rendering + playback."""
     if not text or not str(text).strip():
         return
+
+    # ENSURE MIXER IS INITIALIZED
+    try:
+        if not pygame.mixer.get_init():
+            pygame.mixer.init(frequency=24000, channels=2)
+            print("[Voice] Mixer re-initialized")
+    except Exception as e:
+        print(f"[Voice] Mixer init failed: {e}")
+        pygame.mixer.init(frequency=24000, channels=2)
 
     _interrupted.clear()
     state.set_talking(True)
 
-    # LOWER MEDIA VOLUME BEFORE SPEAKING
-    _lower_media_volume()
+    # Only duck after startup is complete
+    if _startup_complete:
+        _lower_media_volume()
 
     _ensure_workers()
     _text_queue.put(str(text).strip())

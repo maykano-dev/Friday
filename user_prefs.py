@@ -1,46 +1,92 @@
-"""Zara User Preferences - Store user settings and defaults."""
+"""Zara User Preferences - Learning System."""
 
 import json
 import os
+from typing import Optional, List, Dict
 
-PREF_FILE = os.path.join(os.path.dirname(__file__), "user_prefs.json")
+PREF_FILE = os.path.join(os.path.dirname(__file__), "zara_prefs.json")
 
 DEFAULT_PREFS = {
-    "music_app": "spotify",  # spotify, youtube, youtube music
+    "music_app": None,  # Will be learned
     "browser": "chrome",
     "code_editor": "vscode",
     "volume_level": 60,
-    "voice_style": "professional",
-    "location_enabled": True,
-    "wake_word": "zara",
+    "preferred_genres": [],
+    "favorite_artists": [],
+    "recently_played": [],  # Last 10 songs
+    "last_used_app": None,
 }
 
-def load_prefs() -> dict:
-    """Load user preferences."""
-    if os.path.exists(PREF_FILE):
-        try:
-            with open(PREF_FILE, "r") as f:
-                return json.load(f)
-        except:
-            pass
-    return DEFAULT_PREFS.copy()
+class ZaraPreferences:
+    def __init__(self):
+        self.prefs = self._load()
+    
+    def _load(self) -> dict:
+        if os.path.exists(PREF_FILE):
+            try:
+                with open(PREF_FILE, "r") as f:
+                    return json.load(f)
+            except:
+                pass
+        return DEFAULT_PREFS.copy()
+    
+    def _save(self):
+        with open(PREF_FILE, "w") as f:
+            json.dump(self.prefs, f, indent=2)
+    
+    def get_music_app(self) -> Optional[str]:
+        """Get user's preferred music app."""
+        return self.prefs.get("music_app")
+    
+    def set_music_app(self, app: str):
+        """Learn user's preferred music app."""
+        self.prefs["music_app"] = app.lower()
+        self._save()
+        print(f"[Prefs] Learned music app: {app}")
+    
+    def detect_installed_music_apps(self) -> List[str]:
+        """Detect which music apps are installed."""
+        installed = []
+        
+        # Check Spotify
+        import shutil
+        if shutil.which("spotify") or os.path.exists(os.path.expanduser("~/AppData/Roaming/Spotify/Spotify.exe")):
+            installed.append("spotify")
+        
+        # Check Apple Music
+        if shutil.which("apple music") or os.path.exists("C:/Program Files/WindowsApps/AppleInc.AppleMusicWin_*"):
+            installed.append("apple_music")
+        
+        # YouTube Music is always available via web
+        installed.append("youtube_music")
+        
+        return installed
+    
+    def add_recent_song(self, song: str, artist: str):
+        """Remember recently played songs."""
+        entry = {"song": song, "artist": artist}
+        self.prefs["recently_played"].insert(0, entry)
+        self.prefs["recently_played"] = self.prefs["recently_played"][:10]
+        
+        # Track favorite artists
+        if artist.lower() and artist.lower() not in [a.lower() for a in self.prefs["favorite_artists"]]:
+            self.prefs["favorite_artists"].append(artist)
+            self.prefs["favorite_artists"] = self.prefs["favorite_artists"][:20]
+        
+        self._save()
+    
+    def get_favorite_artists(self) -> List[str]:
+        return self.prefs.get("favorite_artists", [])
+    
+    def get_recently_played(self) -> List[dict]:
+        return self.prefs.get("recently_played", [])
 
-def save_prefs(prefs: dict) -> None:
-    """Save user preferences."""
-    with open(PREF_FILE, "w") as f:
-        json.dump(prefs, f, indent=2)
 
-def get_pref(key: str, default=None):
-    """Get a specific preference."""
-    prefs = load_prefs()
-    return prefs.get(key, default)
+# Global singleton
+_prefs: Optional[ZaraPreferences] = None
 
-def set_pref(key: str, value) -> None:
-    """Set a specific preference."""
-    prefs = load_prefs()
-    prefs[key] = value
-    save_prefs(prefs)
-
-def get_music_app() -> str:
-    """Get user's preferred music app."""
-    return get_pref("music_app", "spotify")
+def get_prefs() -> ZaraPreferences:
+    global _prefs
+    if _prefs is None:
+        _prefs = ZaraPreferences()
+    return _prefs

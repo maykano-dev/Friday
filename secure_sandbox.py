@@ -1,4 +1,4 @@
-"""Friday - Secure Sandbox (Desktop Commander-inspired capability whitelisting)
+"""Zara - Secure Sandbox (Desktop Commander-inspired capability whitelisting)
 
 Enhanced sandbox with:
 - AST-based safety analysis
@@ -73,7 +73,7 @@ class SecureSandbox:
 
     def __init__(self, sandbox_dir: Optional[str] = None):
         self.sandbox_dir = sandbox_dir or os.path.join(
-            os.path.dirname(__file__), "friday_sandbox"
+            os.path.dirname(__file__), "zara_sandbox"
         )
         os.makedirs(self.sandbox_dir, exist_ok=True)
 
@@ -194,7 +194,7 @@ class SecureSandbox:
                 text=True,
                 timeout=30,
                 cwd=self.sandbox_dir,
-                env={**os.environ, "FRIDAY_SANDBOX": "1"}
+                env={**os.environ, "ZARA_SANDBOX": "1"}
             )
 
             success = result.returncode == 0

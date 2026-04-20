@@ -1,0 +1,25 @@
+{
+  "music_app": "spotify",
+  "browser": "chrome",
+  "code_editor": "vscode",
+  "volume_level": 60,
+  "preferred_genres": [],
+  "favorite_artists": [
+    "chris brown."
+  ],
+  "recently_played": [
+    {
+      "song": "these are the music on spotify",
+      "artist": ""
+    },
+    {
+      "song": "freaky friday",
+      "artist": "chris brown."
+    },
+    {
+      "song": "goodbye Chris Brown",
+      "artist": ""
+    }
+  ],
+  "last_used_app": null
+}

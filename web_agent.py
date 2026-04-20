@@ -1,4 +1,4 @@
-"""Friday - Enterprise Web Agent
+"""Zara - Enterprise Web Agent
 
 Production-grade web browsing with:
 - Multi-page navigation with session persistence

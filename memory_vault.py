@@ -1,4 +1,4 @@
-"""Friday - permanent lightweight memory vault.
+"""Zara - permanent lightweight memory vault.
 
 Pure-stdlib SQLite store. No vector DB, no pandas, no torch.
 Keyword extraction is a simple stopword-filtered frequency pick so it
@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import time
 from collections import Counter
 from datetime import datetime
 from typing import List, Optional
@@ -34,7 +35,23 @@ def _get_chroma_collection():
             _CHROMA_COLLECTION = _CHROMA_CLIENT.get_or_create_collection(
                 name="semantic_vault")
         except Exception as e:
-            print(f"[Memory Vault] Chroma DB init failed: {e}")
+            error_str = str(e).lower()
+            if "malformed" in error_str or "disk image" in error_str or "bindings" in error_str:
+                print(f"[Memory Vault] CRITICAL: Chroma DB corrupted ({e}). Resetting...")
+                import shutil
+                try:
+                    # Clear out the corrupted directory
+                    if os.path.exists(db_path):
+                        shutil.move(db_path, f"{db_path}_bak_{int(time.time())}")
+                    # Try one more time
+                    os.makedirs(db_path, exist_ok=True)
+                    _CHROMA_CLIENT = chromadb.PersistentClient(path=db_path)
+                    _CHROMA_COLLECTION = _CHROMA_CLIENT.get_or_create_collection(
+                        name="semantic_vault")
+                except Exception as e2:
+                    print(f"[Memory Vault] Chroma reset failed: {e2}")
+            else:
+                print(f"[Memory Vault] Chroma DB init failed: {e}")
     return _CHROMA_COLLECTION
 
 
@@ -73,7 +90,7 @@ def semantic_search(query: str, n_results: int = 3) -> List[str]:
 
 
 DB_PATH = os.path.join(os.path.dirname(
-    os.path.abspath(__file__)), "friday_brain.db")
+    os.path.abspath(__file__)), "zara_brain.db")
 
 MAX_KEYWORDS = 3
 MIN_KEYWORD_LEN = 3
@@ -125,58 +142,76 @@ def _extract_keywords(text: str, max_n: int = MAX_KEYWORDS) -> List[str]:
 
 
 def _connect() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        # Test connection with a quick PRAGMA check
+        conn.execute("PRAGMA integrity_check(1)")
+        return conn
+    except sqlite3.DatabaseError as e:
+        if "malformed" in str(e).lower():
+            print(f"[Memory Vault] Database at {DB_PATH} is malformed. Attempting reset.")
+            if os.path.exists(DB_PATH):
+                os.rename(DB_PATH, DB_PATH + ".corrupted")
+            # Recursive call will now create a fresh DB
+            return _connect()
+        raise e
 
 
 def init_db() -> None:
-    """Create friday_brain.db and the memories table if they don't exist."""
-    with _connect() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS memories (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp     TEXT    NOT NULL,
-                keyword_tags  TEXT    NOT NULL,
-                memory_text   TEXT    NOT NULL
+    """Create zara_brain.db and the memories table if they don't exist."""
+    try:
+        with _connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS memories (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp     TEXT    NOT NULL,
+                    keyword_tags  TEXT    NOT NULL,
+                    memory_text   TEXT    NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS knowledge_vault (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp     TEXT    NOT NULL,
-                bug_pattern   TEXT    NOT NULL,
-                fix_pattern   TEXT    NOT NULL
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS knowledge_vault (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp     TEXT    NOT NULL,
+                    bug_pattern   TEXT    NOT NULL,
+                    fix_pattern   TEXT    NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS coding_tasks (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp     TEXT    NOT NULL,
-                code          TEXT    NOT NULL,
-                status        TEXT    NOT NULL,
-                best_practices_summary TEXT
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS coding_tasks (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp     TEXT    NOT NULL,
+                    code          TEXT    NOT NULL,
+                    status        TEXT    NOT NULL,
+                    best_practices_summary TEXT
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS context_insights (
-                id            INTEGER PRIMARY KEY AUTOINCREMENT,
-                timestamp     TEXT    NOT NULL,
-                insight       TEXT    NOT NULL
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS context_insights (
+                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp     TEXT    NOT NULL,
+                    insight       TEXT    NOT NULL
+                )
+                """
             )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(keyword_tags)"
-        )
-        conn.commit()
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(keyword_tags)"
+            )
+            conn.commit()
+    except Exception as e:
+        print(f"[Memory Vault] Initialization error: {e}")
+        if "malformed" in str(e).lower() and os.path.exists(DB_PATH):
+            print("[Memory Vault] Attempting emergency DB recreate...")
+            os.rename(DB_PATH, DB_PATH + ".emergency_bak")
+            init_db()
 
 
 def store_memory(text: str) -> bool:
@@ -201,7 +236,7 @@ def store_memory(text: str) -> bool:
             conn.commit()
         return True
     except sqlite3.Error as e:
-        print(f"[Friday Vault] store_memory failed: {e}")
+        print(f"[Zara Vault] store_memory failed: {e}")
         return False
 
 
@@ -215,7 +250,7 @@ def get_recent_memories(limit: int = 10) -> List[str]:
             ).fetchall()
             return [r["memory_text"] for r in rows]
     except sqlite3.Error as e:
-        print(f"[Friday Vault] get_recent_memories failed: {e}")
+        print(f"[Zara Vault] get_recent_memories failed: {e}")
         return []
 
 
@@ -259,7 +294,7 @@ def retrieve_memory(user_query: str) -> List[str]:
         with _connect() as conn:
             rows = conn.execute(sql, params).fetchall()
     except sqlite3.Error as e:
-        print(f"[Friday Vault] retrieve_memory failed: {e}")
+        print(f"[Zara Vault] retrieve_memory failed: {e}")
         return []
 
     return [r["memory_text"] for r in rows if r["score"] > 0]
@@ -279,7 +314,7 @@ def store_knowledge(bug_pattern: str, fix_pattern: str) -> bool:
             conn.commit()
         return True
     except sqlite3.Error as e:
-        print(f"[Friday Vault] store_knowledge failed: {e}")
+        print(f"[Zara Vault] store_knowledge failed: {e}")
         return False
 
 
@@ -295,7 +330,7 @@ def log_coding_task(code: str, status: str) -> int:
             conn.commit()
             return cursor.lastrowid or 0
     except sqlite3.Error as e:
-        print(f"[Friday Vault] log_coding_task failed: {e}")
+        print(f"[Zara Vault] log_coding_task failed: {e}")
         return 0
 
 
@@ -303,8 +338,6 @@ def get_unprocessed_failed_tasks() -> List[dict]:
     """Fetch un-summarized failed tasks for the learning engine."""
     try:
         with _connect() as conn:
-            # We also treat 'Complex' as un-summarized if we add that later, but
-            # currently we look for 'Failed' with no summary.
             rows = conn.execute(
                 "SELECT id, code, status FROM coding_tasks "
                 "WHERE status = 'Failed' AND best_practices_summary IS NULL "
@@ -312,7 +345,7 @@ def get_unprocessed_failed_tasks() -> List[dict]:
             ).fetchall()
             return [{"id": r["id"], "code": r["code"], "status": r["status"]} for r in rows]
     except sqlite3.Error as e:
-        print(f"[Friday Vault] get_unprocessed_failed_tasks failed: {e}")
+        print(f"[Zara Vault] get_unprocessed_failed_tasks failed: {e}")
         return []
 
 
@@ -327,7 +360,7 @@ def mark_task_processed(task_id: int, summary: str) -> bool:
             conn.commit()
         return True
     except sqlite3.Error as e:
-        print(f"[Friday Vault] mark_task_processed failed: {e}")
+        print(f"[Zara Vault] mark_task_processed failed: {e}")
         return False
 
 
@@ -345,7 +378,7 @@ def inject_context_insight(insight: str) -> bool:
             conn.commit()
         return True
     except sqlite3.Error as e:
-        print(f"[Friday Vault] inject_context_insight failed: {e}")
+        print(f"[Zara Vault] inject_context_insight failed: {e}")
         return False
 
 
@@ -360,7 +393,7 @@ def get_latest_context_insight() -> Optional[str]:
                 return row["insight"]
             return None
     except sqlite3.Error as e:
-        print(f"[Friday Vault] get_latest_context_insight failed: {e}")
+        print(f"[Zara Vault] get_latest_context_insight failed: {e}")
         return None
 
 

@@ -1,4 +1,4 @@
-"""Friday - Omni-Grasp Clipboard Processing Engine.
+"""Zara - Omni-Grasp Clipboard Processing Engine.
 
 Abstracts multi-modal system memory ingestion via native OS callbacks.
 """

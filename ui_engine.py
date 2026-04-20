@@ -446,7 +446,7 @@ class NeuralVisualizer:
                 pygame.draw.circle(screen, NODE_COLOR, (p[0], p[1]), size)
 
             with self._subtitle_lock:
-                friday_txt = self._subtitle_text
+                zara_txt = self._subtitle_text
                 user_txt = self._user_text
                 txt_time = self._text_time
 
@@ -455,7 +455,7 @@ class NeuralVisualizer:
                 alpha = 255 if elapsed <= 5.0 else max(
                     0, int(255 * (6.0 - elapsed)))
                 self.render_subtitles(
-                    friday_txt, user_txt, screen, subtitle_font, (255, 255, 255), alpha)
+                    zara_txt, user_txt, screen, subtitle_font, (255, 255, 255), alpha)
 
             # --- Background Pulse Indicator ---
             with self._bg_task_lock:
@@ -682,61 +682,50 @@ class NeuralVisualizer:
 
     # ---- Subtitles ---------------------------------------------------------
 
-    def render_subtitles(self, text, user_text, screen, font, fg_color, alpha):
-        """Render the current subtitle text with a shadow at the bottom."""
-        if not text and not user_text:
-            return
+    def render_subtitles(self, zara_text, user_text, screen, font, color, alpha):
+        """Dual-track subtitling: User vs Zara."""
+        margin = 40
+        max_w = self.width - (margin * 2)
 
         def wrap_text(t):
-            max_px = int(self.width * 0.9)
-            words = t.split()
+            words = str(t).split()
             lines = []
-            current = ""
+            curr = ""
             for w in words:
-                trial = (current + " " + w).strip() if current else w
-                if font.size(trial)[0] <= max_px:
-                    current = trial
+                test = (curr + " " + w).strip()
+                if font.size(test)[0] <= max_w:
+                    curr = test
                 else:
-                    if current:
-                        lines.append(current)
-                    current = w
-            if current:
-                lines.append(current)
+                    lines.append(curr)
+                    curr = w
+            if curr:
+                lines.append(curr)
             return lines
 
-        line_h = font.get_linesize()
-        padding_y = 8
-        bottom_margin = 24
-
-        friday_lines = wrap_text(text) if text else []
+        zara_lines = wrap_text(zara_text) if zara_text else []
         user_lines = wrap_text(user_text) if user_text else []
 
-        total_lines = len(friday_lines) + len(user_lines)
-        if friday_lines and user_lines:
-            total_lines += 1  # Gap between user and Friday text
+        total_lines = len(zara_lines) + len(user_lines)
+        if zara_lines and user_lines:
+            total_lines += 1  # Gap between user and Zara text
 
-        block_height = line_h * total_lines + padding_y * 2
-        rect_y = self.height - bottom_margin - block_height
+        line_h = font.get_linesize()
+        total_h = total_lines * line_h
+        start_y = self.height - margin - total_h
 
-        def draw_lines(lines, y_start, color):
+        def draw_lines(lines, y_start, c):
             for i, line in enumerate(lines):
-                shadow_surf = font.render(line, True, (0, 0, 0))
-                fg_surf = font.render(line, True, color)
-                shadow_surf.set_alpha(alpha)
-                fg_surf.set_alpha(alpha)
+                surf = font.render(line, True, c)
+                surf.set_alpha(alpha)
+                rect = surf.get_rect(center=(self.width//2, y_start + i * line_h))
+                screen.blit(surf, rect)
 
-                line_x = (self.width - fg_surf.get_width()) // 2
-                line_y = y_start + i * line_h
-                screen.blit(shadow_surf, (line_x + 2, line_y + 2))
-                screen.blit(fg_surf, (line_x, line_y))
-
-        current_y = rect_y + padding_y
-
+        current_y = start_y
         if user_lines:
-            draw_lines(user_lines, current_y, (0, 212, 255))
-            current_y += line_h * len(user_lines)
-            if friday_lines:
+            draw_lines(user_lines, current_y, (180, 255, 180))
+            current_y += len(user_lines) * line_h
+            if zara_lines:
                 current_y += line_h
 
-        if friday_lines:
-            draw_lines(friday_lines, current_y, fg_color)
+        if zara_lines:
+            draw_lines(zara_lines, current_y, color)

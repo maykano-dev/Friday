@@ -1,4 +1,4 @@
-"""Friday Ears — Continuous background listener with Silero VAD + Groq Whisper.
+"""Zara Ears — Continuous background listener with Silero VAD + Groq Whisper.
 
 Complete rewrite with:
 - Proper circular buffer (never miss first words)
@@ -126,21 +126,30 @@ class ContinuousListener:
             return None
 
         # Remove wake words
-        wake_words = ["zara", "hey zara",
-                      "okay zara", "hi zara", "hello zara"]
+        wake_words = ["zara", "hey zara", "okay zara", "hi zara", "hello zara"]
         text_lower = text.lower().strip()
 
+        matched_wake = False
         for wake in wake_words:
             if text_lower.startswith(wake):
+                # Remove the wake word but preserve the command
                 text = text[len(wake):].strip()
                 text = text.lstrip(",.!?;: ")
-                print(f"[Ear] Wake word removed: '{text}'")
+                if text:
+                    print(f"[Ear] Command after wake word: '{text}'")
+                else:
+                    print(f"[Ear] Wake word only - no command")
+                matched_wake = True
                 break
 
-        # Handle just "Zara" (catchall if it wasn't in the list)
-        if text_lower.startswith("zara"):
-            text = text[4:].strip().lstrip(",.!?;: ")
-            print(f"[Ear] 'Zara' removed: '{text}'")
+        # Handle just "Zara" (catchall if it wasn't in the list or if list check skipped)
+        if not matched_wake and text_lower.startswith("zara"):
+            text = text[4:].strip()
+            text = text.lstrip(",.!?;: ")
+            if text:
+                print(f"[Ear] Command after wake word: '{text}'")
+            else:
+                print(f"[Ear] Wake word only - no command")
 
         # Clean non-ASCII garbage
         ascii_chars = [c for c in text if ord(c) < 128]

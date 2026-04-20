@@ -1,4 +1,4 @@
-"""Friday - Free Web Tools (Zero API Cost) - EXPANDED EDITION
+"""Zara - Free Web Tools (Zero API Cost) - EXPANDED EDITION
 
 Web research and utilities using only free, no-auth-required endpoints.
 
@@ -818,7 +818,7 @@ class FreeWebTools:
         encoded = quote_plus(text)
         return f"https://api.qrserver.com/v1/create-qr-code/?size={size}x{size}&data={encoded}"
 
-    def get_placeholder_image(self, width: int = 400, height: int = 300, text: str = "Friday") -> str:
+    def get_placeholder_image(self, width: int = 400, height: int = 300, text: str = "Zara") -> str:
         """Get a placeholder image URL."""
         return f"https://via.placeholder.com/{width}x{height}/0D1421/00D4FF?text={quote_plus(text)}"
 

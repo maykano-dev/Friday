@@ -2,7 +2,7 @@
 """Test Zara in text mode to isolate the brain from voice input."""
 
 import sys
-import friday_core
+import zara_core
 
 print("=" * 50)
 print("🧠 Testing Zara Brain (Text Mode)")
@@ -22,7 +22,7 @@ while True:
             sys.exit(0)
 
         print("\n[Zara] Thinking...")
-        response = friday_core.generate_response(text)
+        response = zara_core.generate_response(text)
 
         print(f"\nZara: {response}\n")
 

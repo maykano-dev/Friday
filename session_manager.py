@@ -1,7 +1,7 @@
-"""Friday - Session Manager (OpenClaw-inspired persistence)
+"""Zara - Session Manager (OpenClaw-inspired persistence)
 
 Maintains continuity across reboots by serializing conversation state,
-pending tasks, and context cards to disk. On restart, Friday remembers
+pending tasks, and context cards to disk. On restart, Zara remembers
 exactly where you left off.
 """
 
@@ -26,7 +26,7 @@ class TaskStatus(Enum):
 
 @dataclass
 class PendingTask:
-    """A task Friday needs to follow up on."""
+    """A task Zara needs to follow up on."""
     id: str
     description: str
     created_at: float
@@ -48,7 +48,7 @@ class PendingTask:
 
 
 class SessionManager:
-    """Persists conversation state and pending tasks across Friday restarts."""
+    """Persists conversation state and pending tasks across Zara restarts."""
 
     SESSION_FILE = os.path.join(
         os.path.dirname(__file__), "session_state.json")
@@ -171,12 +171,12 @@ class SessionManager:
 
         return None
 
-    def record_exchange(self, user_text: str, friday_response: str) -> None:
+    def record_exchange(self, user_text: str, Zara_response: str) -> None:
         """Record a conversation turn."""
         self.conversation_history.append(
             {"role": "user", "content": user_text})
         self.conversation_history.append(
-            {"role": "assistant", "content": friday_response})
+            {"role": "assistant", "content": Zara_response})
 
         # Keep history manageable
         if len(self.conversation_history) > 40:

@@ -1,4 +1,4 @@
-"""Friday - background learning and post-mortem analysis.
+"""Zara - background learning and post-mortem analysis.
 
 Monitors the system for idle time (ui=STANDBY) and queries Ollama to construct
 lessons and best practice summaries from previously failed coding run attempts.

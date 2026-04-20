@@ -1,4 +1,4 @@
-"""Friday - proactive engagement engine.
+"""Zara - proactive engagement engine.
 
 Watches two triggers from a background daemon thread:
 
@@ -9,7 +9,7 @@ Watches two triggers from a background daemon thread:
 
 When triggered, it calls a registered callback with a single string. The
 callback (in main.py) is responsible for queueing the prompt so the main
-loop can route it through friday_core.generate_response() at a safe moment
+loop can route it through zara_core.generate_response() at a safe moment
 (i.e. when the mic is closed).
 """
 
@@ -22,9 +22,9 @@ import time
 from typing import Callable, Iterable, List, Optional, Set, Tuple
 
 
-# Phrases framed as Friday's own initiations. They are passed straight into
-# friday_core.generate_response() as if the user said them, so the LLM will
-# treat them as conversational prompts and reply in Friday's voice.
+# Phrases framed as Zara's own initiations. They are passed straight into
+# zara_core.generate_response() as if the user said them, so the LLM will
+# treat them as conversational prompts and reply in Zara's voice.
 DEFAULT_CONVERSATION_STARTERS: List[str] = [
     "Sir, you have been quiet for a while. Briefly check in and ask if I can help.",
     "Sir, I notice it has been some time since you last spoke. Suggest a short break in one sentence.",
@@ -88,7 +88,7 @@ class EngagementEngine:
             try:
                 self._prime_seen_triggers()
             except Exception as e:
-                print(f"[Friday Engagement] prime scan failed: {e}")
+                print(f"[Zara Engagement] prime scan failed: {e}")
 
     # ---- Public API --------------------------------------------------------
 
@@ -118,7 +118,7 @@ class EngagementEngine:
                 self._check_idle()
                 self._check_context()
             except Exception as e:
-                print(f"[Friday Engagement] check failed: {e}")
+                print(f"[Zara Engagement] check failed: {e}")
 
             # Sleep in 1s slices so stop() responds quickly.
             for _ in range(self.check_interval):
@@ -229,4 +229,4 @@ class EngagementEngine:
         try:
             self._callback(prompt)
         except Exception as e:
-            print(f"[Friday Engagement] callback failed: {e}")
+            print(f"[Zara Engagement] callback failed: {e}")

@@ -1,4 +1,4 @@
-"""Friday - Temporal Context Engine (Proactive Reflection).
+"""Zara - Temporal Context Engine (Proactive Reflection).
 
 Runs a Background Daemon performing Latent Semantic Analysis on the database
 using a Reflection-Insight-Action (RIA) framework.

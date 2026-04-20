@@ -1,4 +1,4 @@
-"""Friday — Global application state.
+"""Zara — Global application state.
 
 Contains globally shared states, specifically for real-time multiprocessing
 data like audio amplitudes that cross subsystem boundaries.
@@ -9,7 +9,7 @@ from typing import Any
 import multiprocessing
 
 
-class FridayState(Enum):
+class ZaraState(Enum):
     IDLE      = "IDLE"
     LISTENING = "LISTENING"
     THINKING  = "THINKING"

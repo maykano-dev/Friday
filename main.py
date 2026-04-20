@@ -1,11 +1,11 @@
-"""Friday — Main event loop.
+"""Zara — Main event loop.
 
 Architecture:
   - ContinuousListener (daemon) handles the mic on its own thread.
   - VoiceEngine (daemon) handles TTS rendering + playback on two threads.
   - The main loop here only:
       1. Polls the listener's result_queue for transcribed text.
-      2. Dispatches to friday_core for streaming LLM response.
+      2. Dispatches to zara_core for streaming LLM response.
       3. Sleeps 10ms per tick to keep CPU usage minimal.
 """
 
@@ -15,7 +15,7 @@ import time
 import threading
 from queue import Empty
 
-import friday_core
+import zara_core
 import local_voice
 import local_ears
 from ui_engine import ContextCard, NeuralVisualizer, WebResultCard
@@ -35,7 +35,7 @@ sandbox = None
 def get_greeting() -> str:
     """Ask Zara's brain to generate a unique greeting."""
     boot_prompt = "SYSTEM_BOOT: Give me a unique, concise, and confident one-sentence startup greeting as Zara."
-    return friday_core.generate_response(boot_prompt)
+    return zara_core.generate_response(boot_prompt)
 
 
 def _process_utterance(text: str, proactive) -> None:
@@ -56,8 +56,8 @@ def _process_utterance(text: str, proactive) -> None:
     if proactive:
         proactive.notify_user_spoke()
 
-    friday_reply = friday_core.generate_response(text)
-    print(f"Zara: {friday_reply}")
+    zara_reply = zara_core.generate_response(text)
+    print(f"Zara: {zara_reply}")
 
     time.sleep(0.8)
     if ui:
@@ -66,7 +66,7 @@ def _process_utterance(text: str, proactive) -> None:
         ui.set_state("STANDBY")
 
 
-def run_friday():
+def run_Zara():
     global ui, session_mgr, router, sandbox, orchestrator
 
     # ── Keyboard Hotkey ─────────────────────────────────────────────────
@@ -90,63 +90,9 @@ def run_friday():
     ui = NeuralVisualizer()
     ui.start()
 
-    # ── CHECK FOR FIRST RUN / ONBOARDING ─────────────────────────────
-    from onboarding_ui import OnboardingUI, UserProfile
-    import pygame
-
-    profile = UserProfile.load()
-
-    if not profile:
-        print("[System] First run detected - starting onboarding...")
-
-        # Create a separate window for onboarding
-        onboarding_screen = pygame.display.set_mode(
-            (800, 600), pygame.RESIZABLE)
-        pygame.display.set_caption("Zara Setup")
-
-        onboarding = OnboardingUI(800, 600)
-        onboarding_complete = False
-
-        def on_onboarding_complete():
-            nonlocal onboarding_complete
-            onboarding_complete = True
-            print(
-                f"[System] Onboarding complete. Welcome, {onboarding.profile.name}!")
-
-        onboarding.on_complete = on_onboarding_complete
-
-        clock = pygame.time.Clock()
-
-        # Onboarding loop
-        while not onboarding_complete:
-            dt = clock.tick(60) / 1000.0
-
-            for event in pygame.event.get():
-                if event.type == pygame.QUIT:
-                    pygame.quit()
-                    return
-                elif event.type == pygame.VIDEORESIZE:
-                    onboarding.width = event.w
-                    onboarding.height = event.h
-
-                onboarding.handle_event(event)
-
-            onboarding.update(dt)
-
-            # Clear screen
-            onboarding_screen.fill((10, 12, 16))
-
-            # Render onboarding
-            onboarding.render(onboarding_screen)
-
-            pygame.display.flip()
-
-        # Onboarding complete - reset window for main UI
-        pygame.display.set_caption("Zara Neural Core")
-        # Ensure NeuralVisualizer can take over the screen if needed
-        # (NeuralVisualizer._run_loop will create its own screen, but let's be safe)
-
+    # ── CHECK FOR RESUME STATE ───────────────────────────────────────
     if os.path.exists("resume_state.json"):
+
         try:
             with open("resume_state.json", "r", encoding="utf-8") as f:
                 saved_cards = json.load(f)
@@ -168,7 +114,7 @@ def run_friday():
 
     # Setup orchestrator with LLM callback
     def llm_callback(system_prompt: str, user_prompt: str) -> str:
-        return friday_core.generate_response(f"{system_prompt}\n\n{user_prompt}")
+        return zara_core.generate_response(f"{system_prompt}\n\n{user_prompt}")
 
     orchestrator = get_orchestrator(llm_callback)
     orchestrator.start()
@@ -190,6 +136,32 @@ def run_friday():
         ui.set_state("TALKING")
         ui.set_subtitle_text(greeting)
         local_voice.speak(greeting)
+    
+    # Mark startup as complete so future speech triggers ducking
+    local_voice.mark_startup_complete()
+
+    # ── ACTIVATE ZARA'S EYES ─────────────────────────────────────
+    try:
+        from zara_eyes import get_eyes
+        eyes = get_eyes()
+
+        # Set up error callback - Zara proactively helps!
+        def on_error(error_context):
+            error_msg = error_context.error_message
+            print(f"[Zara] Proactively detected error: {error_msg}")
+
+            # Zara speaks up when she sees an error!
+            import local_voice
+            # Shortened message for better UX
+            local_voice.speak(
+                f"Sir, I noticed an error on your screen. Would you like me to help?")
+
+        eyes.on_error_detected = on_error
+
+        # eyes.start()
+        print("[Zara] Eyes ready for on-demand use")
+    except Exception as e:
+        print(f"[Zara] Eyes failed to activate: {e}")
 
     # ── 3. Boot background daemons ──────────────────────────────────────
     proactive = ProactiveEngine(ui=ui, interval_seconds=1800)
@@ -244,8 +216,15 @@ def run_friday():
         if learning:
             learning.stop()
         proactive.stop()
+        
+        try:
+            from zara_eyes import get_eyes
+            get_eyes().stop()
+        except:
+            pass
+            
         ui.stop()
 
 
 if __name__ == "__main__":
-    run_friday()
+    run_Zara()

@@ -1,6 +1,6 @@
-"""Friday - Agent Orchestrator (AIBrain-inspired multi-agent teams)
+"""Zara - Agent Orchestrator (AIBrain-inspired multi-agent teams)
 
-Enables Friday to spawn specialized sub-agents that work together on
+Enables Zara to spawn specialized sub-agents that work together on
 complex tasks. Each agent has a specific role and can be chained into
 workflows.
 """
