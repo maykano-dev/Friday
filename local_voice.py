@@ -177,6 +177,14 @@ threading.Thread(target=_warmup, daemon=True).start()
 
 
 
+def _run_async(coro):
+    """Safely run async code in a new event loop for this thread."""
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
 def _renderer_worker() -> None:
     """Renders text to in-memory audio (BytesIO)."""
     from io import BytesIO
@@ -199,19 +207,19 @@ def _renderer_worker() -> None:
                 buf = BytesIO()
                 # 1. Try ElevenLabs if API key is present
                 if ELEVENLABS_API_KEY:
-                    audio_data = asyncio.run(_render_elevenlabs(text))
+                    audio_data = _run_async(_render_elevenlabs(text))
                     if audio_data:
                         buf.write(audio_data)
                     else:
                         # Fallback to Edge-TTS if ElevenLabs failed
                         comm = edge_tts.Communicate(text, VOICE, rate=RATE, pitch=PITCH)
-                        for chunk in asyncio.run(_collect_audio(comm)):
+                        for chunk in _run_async(_collect_audio(comm)):
                             if _interrupted.is_set(): break
                             buf.write(chunk)
                 # 2. Otherwise use Edge-TTS
                 elif edge_tts:
                     comm = edge_tts.Communicate(text, VOICE, rate=RATE, pitch=PITCH)
-                    for chunk in asyncio.run(_collect_audio(comm)):
+                    for chunk in _run_async(_collect_audio(comm)):
                         if _interrupted.is_set(): break
                         buf.write(chunk)
                 else:

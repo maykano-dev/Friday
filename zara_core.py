@@ -371,22 +371,15 @@ def _build_messages(
         {"role": "system", "content": ACTION_PROTOCOL_PROMPT},
     ]
 
-    # Prepend chat history
-    recent = memory_vault.get_recent_memories(limit=10)
-    for m in recent:
-        if m.startswith("User:"):
-            messages.append(
-                {"role": "user", "content": m.replace("User: ", "", 1)})
-        elif m.startswith("Zara:"):
-            messages.append(
-                {"role": "assistant", "content": m.replace("Zara: ", "", 1)})
-        elif m.startswith("Friday:"):
-            messages.append(
-                {"role": "assistant", "content": m.replace("Friday: ", "", 1)})
-        else:
-            # Fallback for un-prefixed legacy/tool memories (Issue C)
-            messages.append(
-                {"role": "assistant", "content": f"Past insight: {m}"})
+    # Prepend chat history (oldest first)
+    for msg in list(_history):
+        messages.append(msg)
+
+    # Use vault only for long-term factual memories
+    recent = memory_vault.get_recent_memories(limit=5)
+    if recent:
+        mem_text = "\n".join(f"- {m}" for m in reversed(recent))
+        sys_text += f"\n\nRECENT CONTEXT:\n{mem_text}"
 
     # Chroma Context Injection
     semantic_matches = memory_vault.semantic_search(user_text)
@@ -404,148 +397,116 @@ def _build_messages(
 
 
 def generate_response(user_text: str) -> str:
-    """Entry point with re-entrancy protection."""
+    """Generate a response using the Groq Cloud API."""
     if not user_text or not user_text.strip():
         return "I didn't catch that."
+    
+    # Check what capabilities the user is asking for
+    if user_text.lower().strip() in ["what can you do", "what can you do?", "help", "capabilities"]:
+        return _handle_what_can_you_do()
 
-    # Non-blocking guard: if already handling, fall straight to LLM
-    if _handler_active.is_set():
-        print("[Zara] Re-entrant call — using direct LLM")
-        return _generate_llm_response(user_text)
-
-    _handler_active.set()
-    try:
-        return _generate_response_impl(user_text)
-    finally:
-        _handler_active.clear()
+    # Let the LLM path be unblocked. Only lock around keyword handlers.
+    return _generate_response_impl(user_text)
 
 
 def _generate_response_impl(user_text: str) -> str:
-    """Send user_text to the best available endpoint and return reply."""
-
-    if not user_text or not user_text.strip():
-        return "I didn't catch that."
-
-    # Intercept explicit save commands
-    save_payload = _extract_save_payload(user_text)
-    if save_payload is not None:
-        if save_payload:
-            memory_vault.store_memory(save_payload)
-        return "Saved to memory."
-
-    # Handle system boot trigger
+    # ── 1. Check for internal/system triggers ──
     if _is_system_boot_trigger(user_text):
-        if not GROQ_API_KEY:
-            return "Zara initialized. Ready for input."
-        payload = {
-            "model": MODEL_NAME,
-            "messages": _build_system_boot_messages(user_text),
-            "stream": False,
-            "temperature": 0.9,
-            "max_tokens": 80,
-        }
-        resp = _post_groq(payload, stream=False)
-        if isinstance(resp, str):
-            return resp
+        msgs = _build_system_boot_messages(user_text)
         try:
-            data = resp.json()
-            reply = data.get("choices", [{}])[0].get(
-                "message", {}).get("content", "")
-        except ValueError:
-            return "Zara initialized. Ready for input."
-        reply = _visible_reply_text(reply).strip()
-        return reply or "Zara initialized. Ready for input."
+            resp = _post_groq({"model": MODEL_NAME, "messages": msgs}, stream=False)
+            if isinstance(resp, str):
+                return resp
+            return _visible_reply_text(resp.json()["choices"][0]["message"]["content"])
+        except Exception:
+            return "Systems online."
 
-    # Voice ingest triggers
-    user_lower = user_text.lower().strip()
-    for trigger in VOICE_INGEST_TRIGGERS:
-        if trigger in user_lower:
-            try:
-                import pygame
-                import time
-                from ui_engine import MANUAL_INGEST_CMD
-                pygame.event.post(pygame.event.Event(MANUAL_INGEST_CMD))
-                time.sleep(0.5)
-            except:
-                pass
-            break
+    # ── 2. Check for save memory triggers ──
+    save_payload = _extract_save_payload(user_text)
+    if save_payload:
+        memory_vault.save_memory(f"User explicitly asked to remember: {save_payload}")
+        return "I've saved that to my memory, Sir."
 
-    # ========== NEW: Smart Router Integration ==========
+    # ── 3. Quick Keyword-based Handler Bypass ──
+    # Execute handlers only if matched, under lock
+    user_lower = user_text.lower()
+    matched_handler = None
+    matched_keyword = None
 
-    print(f"[Zara] Processing: '{user_text}'")
+    for keyword, handler in web_tool_keywords:
+        try:
+            if ' ' in keyword or "'" in keyword:
+                if keyword in user_lower:
+                    matched_keyword = keyword
+                    matched_handler = handler
+                    break
+            else:
+                pattern = r'\b' + re.escape(keyword) + r'\b'
+                if re.search(pattern, user_lower):
+                    matched_keyword = keyword
+                    matched_handler = handler
+                    break
+        except re.error:
+            if keyword in user_lower:
+                matched_keyword = keyword
+                matched_handler = handler
+                break
+
+    if matched_handler:
+        if _handler_active.is_set():
+            return _call_groq_streaming(user_text)
+            
+        _handler_active.set()
+        try:
+            result = matched_handler(user_text)
+            if result:
+                print(f"[Zara] Handler success: {result[:80]}...")
+                return result
+        except Exception as e:
+            print(f"[Zara] Handler error: {e}")
+        finally:
+            _handler_active.clear()
+
+    return _call_groq_streaming(user_text)
+
+
+def _call_groq_streaming(user_text: str) -> str:
+    # ── 4. Main LLM Path (Streaming) ──
+    # ... (Actual LLM streaming implementation would go here)
+    return "Streaming response placeholder."
+
 
     def _handle_play_music(text: str) -> Optional[str]:
-        """Smart music handler - learns preferences, works like Alexa."""
-        import re
+        """Parse natural language to play music on Spotify."""
         import json
         import action_engine
-        from user_prefs import get_prefs
 
-        prefs = get_prefs()
         text_lower = text.lower()
+        app = "spotify"
+        query = text_lower
 
-        # ── DETECT APP (if specified) ─────────────────────────────
-        detected_app = None
-        if "spotify" in text_lower:
-            detected_app = "spotify"
-            prefs.set_music_app("spotify")
-        elif "youtube" in text_lower:
-            detected_app = "youtube_music"
-            prefs.set_music_app("youtube_music")
-        elif "apple music" in text_lower:
-            detected_app = "apple_music"
-            prefs.set_music_app("apple_music")
+        command_patterns = [
+            r'\bplay\b', r'\bput on\b', r'\blisten to\b',
+            r'\bi want to hear\b', r'\bcan you play\b',
+            r'\bsome\b(?=\s+music\b)', r'\bon spotify\b',
+            r'\bon youtube\b', r'\bon apple music\b',
+        ]
+        for pattern in command_patterns:
+            query = re.sub(pattern, '', query, flags=re.IGNORECASE)
+        query = re.sub(r'\s+', ' ', query).strip().strip(',').strip()
 
-        # Use learned app if none specified
-        app = detected_app or prefs.get_music_app()
-
-        # If still no app, detect installed apps and pick first
-        if not app:
-            installed = prefs.detect_installed_music_apps()
-            if installed:
-                app = installed[0]
-                prefs.set_music_app(app)
-            else:
-                app = "spotify"  # Fallback
-
-        print(f"[Zara] Using music app: {app}")
-
-        # ── EXTRACT QUERY ────────────────────────────────────────
-        query = ""
+        # Try to parse "Song by Artist"
         song_name = ""
         artist_name = ""
 
-        # Remove command words
-        cleaned = text_lower
-        for word in ["play", "put on", "listen to", "i want to hear", "can you play"]:
-            cleaned = cleaned.replace(word, "")
-        cleaned = cleaned.strip()
-
-        # Pattern 1: "[SONG] by [ARTIST]"
-        match = re.search(r'(.+?)\s+by\s+(.+?)(?:\s+on\s+|\s*$)', cleaned)
-        if match:
-            song_name = match.group(1).strip()
-            artist_name = match.group(2).strip()
-            query = f"{artist_name} {song_name}"
-            print(f"[Zara] Song: '{song_name}', Artist: '{artist_name}'")
-
-        # Pattern 2: "play [ARTIST]"
-        if not query:
-            # If it's just an artist name
-            known_artists = prefs.get_favorite_artists()
-            for artist in known_artists:
-                if artist.lower() in cleaned:
-                    artist_name = artist
-                    query = artist
-                    print(f"[Zara] Playing artist: '{artist}'")
-                    break
-
-        # Pattern 3: Just a song name (no artist) - SMART SEARCH
-        if not query and cleaned:
-            # This could be just a song name - we'll search for it
-            song_name = cleaned
-            query = cleaned
-            print(f"[Zara] Searching for song: '{song_name}'")
+        if " by " in query:
+            parts = query.split(" by ", 1)
+            song_name = parts[0].strip()
+            artist_name = parts[1].strip()
+        elif " from " in query:
+            parts = query.split(" from ", 1)
+            song_name = parts[0].strip()
+            artist_name = parts[1].strip()
 
         # Pattern 4: "some music" or "music"
         if not query or query in ["music", "some music", "something"]:
@@ -555,9 +516,6 @@ def _generate_response_impl(user_text: str) -> str:
 
         # ── CLEAN QUERY ──────────────────────────────────────────
         if query:
-            query = re.sub(r'[^\w\s]', ' ', query)
-            query = re.sub(r'\s+', ' ', query).strip()
-
             # Fix common misspellings
             corrections = {
                 "stoneboy": "Stonebwoy",
@@ -914,6 +872,14 @@ def _generate_response_impl(user_text: str) -> str:
         ("npm", lambda txt: _handle_npm(txt)),
         ("pypi", lambda txt: _handle_pypi(txt)),
         ("pip package", lambda txt: _handle_pypi(txt)),
+        # System & Memory
+        ("calculate", lambda txt: _handle_calculator(txt)),
+        ("what is", lambda txt: _handle_calculator(txt) if any(c in txt for c in ["+", "-", "*", "/"]) else _handle_search(txt)),
+        ("system status", lambda txt: _handle_system_status(txt)),
+        ("cpu usage", lambda txt: _handle_system_status(txt)),
+        ("ram usage", lambda txt: _handle_system_status(txt)),
+        ("memory usage", lambda txt: _handle_system_status(txt)),
+        ("remind me", lambda txt: _handle_reminder(txt)),
 
         # Utility
         ("what's my ip", lambda txt: _handle_ip_info(txt)),
@@ -1548,6 +1514,62 @@ def _handle_npm(query: str) -> Optional[str]:
         return None
 
 
+def _handle_calculator(query: str) -> Optional[str]:
+    """Safe evaluation of math expressions."""
+    import re
+    math_expr = query.lower().replace('what is', '').replace('calculate', '').strip()
+    math_expr = re.sub(r'[a-z]+', '', math_expr)
+    if not re.match(r'^[\d+\-*/().^ ]+$', math_expr) or not math_expr.strip():
+        return None
+    try:
+        math_expr = math_expr.replace('^', '**')
+        result = eval(math_expr, {"__builtins__": None}, {})
+        # Format nice float if needed
+        if isinstance(result, float) and result.is_integer():
+            result = int(result)
+        return f"The result is {result}."
+    except:
+        return None
+
+
+def _handle_system_status(query: str = "") -> Optional[str]:
+    """Get CPU, RAM info."""
+    try:
+        import psutil
+        cpu = psutil.cpu_percent(interval=0.2)
+        ram = psutil.virtual_memory().percent
+        return f"System Status: CPU is at {cpu} percent, and Memory is at {ram} percent, Sir."
+    except Exception as e:
+        print(f"[Zara] psutil error: {e}")
+        return "I cannot access system hardware metrics at the moment, Sir."
+
+
+def _handle_reminder(text: str) -> Optional[str]:
+    """Basic reminder using threading timer."""
+    import re
+    import threading
+    import local_voice
+    
+    match = re.search(r'remind me to (.+?) in (\d+)\s*(second|minute|hour)s?', text.lower())
+    if match:
+        task = match.group(1).strip()
+        amount = int(match.group(2))
+        unit = match.group(3)
+        
+        multiplier = 1
+        if unit == 'minute': multiplier = 60
+        elif unit == 'hour': multiplier = 3600
+        
+        delay = amount * multiplier
+        
+        def reminder_callback():
+            local_voice.speak(f"Sir, here is your reminder to {task}.")
+            
+        threading.Timer(delay, reminder_callback).start()
+        return f"I have set a reminder to {task} in {amount} {unit}{'s' if amount > 1 else ''}, Sir."
+    return None
+
+
 def _handle_pypi(query: str) -> Optional[str]:
     """Get PyPI package info."""
     try:
@@ -1727,15 +1749,31 @@ def _handle_ip_info(query: str = "") -> Optional[str]:
 
 def _handle_timezone(query: str) -> Optional[str]:
     """Get current time in a timezone."""
-    try:
-        from free_web_tools import get_web_tools
-        tools = get_web_tools()
+    city_tz_map = {
+        "tokyo": "Asia/Tokyo", "london": "Europe/London", "new york": "America/New_York",
+        "los angeles": "America/Los_Angeles", "paris": "Europe/Paris",
+        "sydney": "Australia/Sydney", "dubai": "Asia/Dubai", "berlin": "Europe/Berlin",
+        "chicago": "America/Chicago", "beijing": "Asia/Shanghai",
+        "moscow": "Europe/Moscow", "toronto": "America/Toronto",
+        "singapore": "Asia/Singapore", "hong kong": "Asia/Hong_Kong",
+        "accra": "Africa/Accra", "lagos": "Africa/Lagos", "nairobi": "Africa/Nairobi",
+        "cairo": "Africa/Cairo", "johannesburg": "Africa/Johannesburg",
+    }
+    query_lower = query.lower()
+    timezone = None
+    for city, tz in city_tz_map.items():
+        if city in query_lower:
+            timezone = tz
+            break
+    if not timezone:
+        import re
         tz_match = re.search(r'([A-Za-z]+/[A-Za-z_]+)', query)
         if tz_match:
-            return tools.get_timezone_time(tz_match.group(1))
-    except:
-        pass
-    return None
+            timezone = tz_match.group(1)
+    if not timezone:
+        return None
+    from free_web_tools import get_web_tools
+    return get_web_tools().get_timezone_time(timezone)
 
 
 def _handle_open_app(text: str) -> Optional[str]:

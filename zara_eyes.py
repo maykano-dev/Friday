@@ -186,28 +186,29 @@ class ZaraEyes:
             
             if thread.is_alive():
                 print("[Zara Eyes] Vision query timed out")
+                description = ocr_text[:200] or f"I see the {window_title} window open, Sir."
                 self.current_context = ScreenContext(
                     timestamp=time.time(),
                     active_window=window_title,
-                    text_on_screen="",
+                    text_on_screen=ocr_text,
                     has_error=False,
-                    raw_description="I can see your screen but I'm still processing, Sir."
+                    raw_description=description
                 )
                 return
             
             if error_msg:
                 print(f"[Zara Eyes] Vision error: {error_msg}")
-                # Fallback to basic description
+                description = ocr_text[:200] or f"I see the {window_title} window open, Sir."
                 self.current_context = ScreenContext(
                     timestamp=time.time(),
                     active_window=window_title,
-                    text_on_screen="",
+                    text_on_screen=ocr_text,
                     has_error=False,
-                    raw_description=f"I see the {window_title} window open, Sir."
+                    raw_description=description
                 )
                 return
             
-            description = response_text
+            description = response_text or ocr_text[:200] or f"I see the {window_title} window open, Sir."
             print(f"[Zara Eyes] Vision says: {description}")
             
             # Create context

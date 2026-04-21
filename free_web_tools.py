@@ -389,7 +389,7 @@ class FreeWebTools:
 
         try:
             resp = self.session.get(
-                "https://www.boredapi.com/api/activity", timeout=10)
+                "https://bored-api.appbrewery.com/random", timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
                 activity = data.get('activity', '')

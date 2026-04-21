@@ -12,7 +12,7 @@ import os
 import time
 from datetime import datetime
 from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from enum import Enum
 
 
@@ -34,7 +34,7 @@ class PendingTask:
     followup_trigger: Optional[str] = None  # Condition to check for followup
     followup_prompt: Optional[str] = None    # What to say when triggered
     last_check: Optional[float] = None
-    metadata: Dict[str, Any] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         d = asdict(self)

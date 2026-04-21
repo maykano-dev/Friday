@@ -322,20 +322,17 @@ def retrieve_memory(user_query: str) -> List[str]:
     if not keywords:
         return []
 
-    # Build a dynamic "score = (kw1 hit) + (kw2 hit) + ..." expression so the
-    # DB ranks rows for us in a single query. Still pure SQLite.
-    score_terms = []
-    where_terms = []
-    score_params = []
-    where_params = []
-    
+    score_terms, where_terms, params = [], [], []
     for kw in keywords:
         like = f"%{kw}%"
-        score_terms.append(
-            "(CASE WHEN memory_text LIKE ? OR keyword_tags LIKE ? THEN 1 ELSE 0 END)"
-        )
-        score_params.extend([like, like])
+        score_terms.append("(CASE WHEN memory_text LIKE ? OR keyword_tags LIKE ? THEN 1 ELSE 0 END)")
+        params.extend([like, like])   # for score SELECT
         where_terms.append("(memory_text LIKE ? OR keyword_tags LIKE ?)")
+
+    # Add where params AFTER score params (matching SQL order)
+    where_params = []
+    for kw in keywords:
+        like = f"%{kw}%"
         where_params.extend([like, like])
 
     score_expr = " + ".join(score_terms)
@@ -350,7 +347,7 @@ def retrieve_memory(user_query: str) -> List[str]:
     )
     
     # Combined parameters in exact order of appearance in SQL
-    final_params = score_params + where_params + [TOP_RESULTS]
+    final_params = params + where_params + [TOP_RESULTS]
 
     try:
         with _connect() as conn:

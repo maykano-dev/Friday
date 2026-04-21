@@ -436,7 +436,10 @@ class Brain:
         self.conversation_history = [
             {"role": "system", "content": Config.SYSTEM_PROMPT}
         ]
-        self.groq_client = Groq(api_key=Config.GROQ_KEY) if GROQ_AVAILABLE and Config.GROQ_KEY else None
+        self.groq_client = None
+        if GROQ_AVAILABLE and Config.GROQ_KEY:
+            from groq import Groq
+            self.groq_client = Groq(api_key=Config.GROQ_KEY)
         self.max_history = 20   # keep last 20 turns in context
 
     def add_to_history(self, role: str, content: str):
@@ -449,25 +452,17 @@ class Brain:
             )
 
     async def think(self, user_input: str) -> str:
-        """Generate a response. Streams tokens for low-latency TTS."""
+        """Generate a response using the unified Zara Core."""
         self.add_to_history("user", user_input)
 
-        response = ""
-        try:
-            if Config.USE_GROQ_PRIMARY and self.groq_client:
-                response = await self._groq_stream(user_input)
-            else:
-                response = await self._ollama_stream(user_input)
-        except Exception as e:
-            print(f"  [Brain] Primary failed ({e}), trying fallback…")
-            try:
-                if Config.USE_GROQ_PRIMARY:
-                    response = await self._ollama_stream(user_input)
-                else:
-                    response = await self._groq_stream(user_input)
-            except Exception as e2:
-                print(f"  [Brain] Both failed: {e2}")
-                response = "I'm having trouble connecting right now. Give me a moment, Sir."
+        import zara_core
+        import asyncio
+        import concurrent.futures
+        
+        loop = asyncio.get_event_loop()
+        with concurrent.futures.ThreadPoolExecutor() as pool:
+            # Delegate to the authoritative brain which handles tools, memory, and routing
+            response = await loop.run_in_executor(pool, zara_core.generate_response, user_input)
 
         self.add_to_history("assistant", response)
         return response

@@ -197,13 +197,19 @@ def run_Zara():
 
     # Smart Engagement Engine (Idle + File Scanning)
     def _proactive_callback(prompt):
+        import state
+        # Don't interrupt if busy
+        if getattr(state.is_talking, 'value', False):
+            return
+        if _utterance_lock.locked():
+            return
         threading.Thread(
             target=_process_utterance,
             args=(prompt, proactive),
             daemon=True
         ).start()
 
-    engagement = EngagementEngine(idle_timeout_seconds=600, scan_dir=".")
+    engagement = EngagementEngine(idle_timeout_seconds=600, scan_dir=None)
     engagement.start(callback=_proactive_callback)
 
     try:
@@ -213,6 +219,29 @@ def run_Zara():
     except Exception as e:
         print(f"[System] LearningEngine skipped: {e}")
         learning = None
+
+    # ── 3.5. Start Wake Word Engine ─────────────────────────────────────
+    try:
+        from wake_word_engine import WakeWordEngine
+        import local_voice
+        import pygame
+        
+        def wake_callback():
+            local_voice.interrupt()
+            if ui:
+                ui.set_state("LISTENING")
+            try:
+                # Play an acknowledgment chime if it exists
+                if os.path.exists("assets/chime.wav"):
+                    pygame.mixer.Sound("assets/chime.wav").play()
+            except:
+                pass
+                
+        wake_engine = WakeWordEngine(callback=wake_callback)
+        wake_engine.start()
+        print("[System] Wake Word Engine online.")
+    except Exception as e:
+        print(f"[System] Wake Word Engine failed to start: {e}")
 
     # ── 4. Start the Continuous Listener (daemon) ───────────────────────
     # Pass the UI object to the listener here

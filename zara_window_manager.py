@@ -96,6 +96,9 @@ class ZaraWindowManager:
     
     def find_window(self, title_contains: str = None, process_contains: str = None) -> Optional[WindowInfo]:
         """Find a window by title or process name."""
+        if not title_contains and not process_contains:
+            return self.get_active_window()
+            
         windows = self.get_all_windows()
         
         for w in windows:

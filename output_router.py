@@ -102,10 +102,21 @@ class OutputRouter:
             if not is_visual:
                 spoken_lines.append(line)
 
+        # Only route list content to visual if it contains 3+ items, to reduce clutter.
+        final_visual_lines = []
+        if len(visual_lines) < 3:
+            for line in visual_lines:
+                if re.match(r'^\s*[|].+[|]\s*$', line.strip()):
+                    final_visual_lines.append(line)
+                else:
+                    spoken_lines.append(line)
+        else:
+            final_visual_lines = visual_lines
+
         spoken = '\n'.join(spoken_lines).strip()
 
-        if visual_lines:
-            visual = '\n'.join(visual_lines)
+        if final_visual_lines:
+            visual = '\n'.join(final_visual_lines)
         elif code_blocks:
             visual = '\n\n'.join(code_blocks)
 

@@ -887,8 +887,19 @@ Return purely valid JSON without markdown tags."""
         pyautogui.hotkey("ctrl", "a")
         time.sleep(0.2)
         
-        # Type the query slowly (more reliable)
-        pyautogui.write(query, interval=0.04)
+        # Type the query using clipboard for Unicode safety
+        try:
+            import pyperclip
+            pyperclip.copy(query)
+            time.sleep(0.1)
+            pyautogui.hotkey("ctrl", "v")
+        except ImportError:
+            # Fallback: type char by char slowly
+            for char in query:
+                try:
+                    pyautogui.write(char, interval=0.05)
+                except:
+                    pass
         time.sleep(0.6)
         
         # Press Enter to search

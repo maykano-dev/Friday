@@ -670,7 +670,24 @@ class PCController:
         try:
             from zara_vision import get_vision
             vision = get_vision()
-            coords = vision.find_element(description)
+            
+            coords = None
+            def _find():
+                nonlocal coords
+                try:
+                    coords = vision.find_element(description)
+                except Exception:
+                    pass
+            
+            import threading
+            t = threading.Thread(target=_find)
+            t.start()
+            t.join(timeout=5.0)
+            
+            if t.is_alive():
+                print("[PCController] Vision find_element timed out after 5s")
+                return False
+                
             if coords:
                 if 0 < coords[0] < self.screen_width and 0 < coords[1] < self.screen_height:
                     self.click(coords[0], coords[1])
