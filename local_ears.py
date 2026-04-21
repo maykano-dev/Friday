@@ -386,11 +386,28 @@ class ContinuousListener:
             # Passive gender detection — update honorific from speech cues
             try:
                 from gender_detector import get_gender_detector
-                get_gender_detector().detect_from_text(cleaned)
+                det = get_gender_detector()
+                det.detect_from_text(cleaned)
+                # Push updated gender/honorific to dashboard
+                try:
+                    import ws_bridge
+                    ws_bridge.set_gender(det.get_gender().value, det.get_honorific())
+                except Exception:
+                    pass
+            except Exception:
+                pass
+
+            # Stream transcript + speaker context to dashboard
+            try:
+                import ws_bridge
+                ctx = classification.lower() if 'classification' in dir() else 'direct'
+                ws_bridge.set_live_transcript(cleaned, live=True)
+                ws_bridge.set_speaker_context(ctx)
             except Exception:
                 pass
 
             self.result_queue.put(cleaned)
+
 
         stream.stop_stream()
         stream.close()

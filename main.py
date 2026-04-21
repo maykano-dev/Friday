@@ -27,6 +27,7 @@ from output_router import get_router
 from engagement_engine import EngagementEngine
 import action_engine
 import state
+import ws_bridge  # ← Real-time dashboard bridge
 
 ui = None
 session_mgr = None
@@ -54,6 +55,9 @@ def _process_utterance(text: str, proactive) -> None:
             ui.set_user_text(text)
             ui.set_state("THINKING")
             ui.set_subtitle_text("...")
+        ws_bridge.set_state("THINKING")
+        ws_bridge.add_message("user", text)
+        ws_bridge.set_live_transcript(text, live=False)
 
         if proactive:
             proactive.notify_user_spoke()
@@ -81,6 +85,8 @@ def _process_utterance(text: str, proactive) -> None:
             if ui:
                 ui.set_subtitle_text(routed.spoken)
                 ui.set_state("TALKING")
+            ws_bridge.set_state("TALKING")
+            ws_bridge.add_message("zara", routed.spoken)
             local_voice.speak(routed.spoken)
 
     # Wait for speech to finish before resetting UI (OUTSIDE THE LOCK)
@@ -92,6 +98,7 @@ def _process_utterance(text: str, proactive) -> None:
         ui.set_subtitle_text("")
         ui.set_user_text("")
         ui.set_state("STANDBY")
+    ws_bridge.set_state("STANDBY")
 
 
 def run_Zara():
@@ -117,6 +124,17 @@ def run_Zara():
     # ── 1. Boot UI ──────────────────────────────────────────────────────
     ui = NeuralVisualizer()
     ui.start()
+
+    # ── 1.1 Start WebSocket bridge for React dashboard ──────────────────
+    ws_bridge.start_bridge()
+
+    # Seed API health from env
+    ws_bridge.set_api_health({
+        "groq":       "online" if os.getenv("GROQ_API_KEY") else "offline",
+        "deepgram":   "online" if os.getenv("DEEPGRAM_API_KEY") else "offline",
+        "elevenlabs": "online" if os.getenv("ELEVENLABS_API_KEY") else "offline",
+        "ollama":     "offline",
+    })
 
     # ── CHECK FOR RESUME STATE ───────────────────────────────────────
     if os.path.exists("resume_state.json"):

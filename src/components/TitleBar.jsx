@@ -1,3 +1,4 @@
+import React, { useState, useEffect } from 'react';
 import { useZaraStore } from '../store/zaraStore';
 
 const isElectron = typeof window !== 'undefined' && window.electron?.isElectron;
@@ -138,8 +139,8 @@ export default function TitleBar() {
 }
 
 function Clock() {
-  const [time, setTime] = React.useState('');
-  React.useEffect(() => {
+  const [time, setTime] = useState('');
+  useEffect(() => {
     const tick = () => {
       const n = new Date();
       setTime(`${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}:${String(n.getSeconds()).padStart(2,'0')}`);
@@ -160,5 +161,3 @@ function Clock() {
     </div>
   );
 }
-
-import React from 'react';

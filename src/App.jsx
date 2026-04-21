@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import TitleBar from './components/TitleBar';
 import NeuralSphere from './components/NeuralSphere';
-import { useZaraStore } from './store/zaraStore';
+import { useZaraStore, wsSend } from './store/zaraStore';
 
 // ── CSS Variables injected globally ───────────────────────────────
 const GLOBAL_CSS = `
@@ -172,7 +172,7 @@ const CAPABILITY_GROUPS = [
 
 function IntelPanel() {
   const { zaraState, speakerContext, bgDetectionEnabled, setBgDetectionEnabled,
-    conversation, metrics, volume, isMuted, setVolume } = useZaraStore();
+    conversation, metrics, volume, isMuted, setVolume, wsConnected } = useZaraStore();
 
   const convRef = useRef(null);
   useEffect(() => {
@@ -525,6 +525,12 @@ function SettingsPanel() {
 function VolumeCard({ volume, isMuted, setVolume }) {
   const bars = Array.from({ length: 20 }, (_, i) => i);
   const litCount = Math.round(volume / 100 * 20);
+
+  const handleVolumeChange = (v) => {
+    setVolume(v);
+    wsSend({ type: 'volume', level: v });
+  };
+
   return (
     <div style={T.card}>
       <span style={T.label}>Volume Control</span>
@@ -536,7 +542,7 @@ function VolumeCard({ volume, isMuted, setVolume }) {
       </div>
       <input
         type="range" min={0} max={100} value={volume}
-        onChange={e => setVolume(+e.target.value)}
+        onChange={e => handleVolumeChange(+e.target.value)}
         style={{ width:'100%', height:4, accentColor:'var(--cyan)', cursor:'pointer', marginBottom:8 }}
       />
       <div style={{ display:'flex', gap:2, height:16 }}>
@@ -622,6 +628,23 @@ function QABtn({ onClick, children, style: extra }) {
         transition:'all 0.15s', whiteSpace:'nowrap', ...extra }}>
       {children}
     </button>
+  );
+}
+
+function WsStatusDot() {
+  const wsConnected = useZaraStore(s => s.wsConnected);
+  return (
+    <div style={{ display:'flex', alignItems:'center', gap:5 }}>
+      <div style={{
+        width:6, height:6, borderRadius:'50%',
+        background: wsConnected ? 'var(--green)' : 'var(--red)',
+        animation: wsConnected ? 'pulseBlink 2s infinite' : 'none',
+        flexShrink:0,
+      }} />
+      <span style={{ fontSize:9, ...T.mono, color:'var(--text3)' }}>
+        {wsConnected ? 'BACKEND LIVE' : 'BACKEND OFFLINE'}
+      </span>
+    </div>
   );
 }
 
@@ -769,6 +792,8 @@ function BottomBar({ onSend }) {
             </svg>
           </button>
         </div>
+        {/* WS connection status */}
+        <WsStatusDot />
       </div>
 
       {/* System metrics */}
@@ -870,9 +895,11 @@ export default function App() {
     const tl = text.toLowerCase();
     if (/\bi('m| am) a (man|guy|male)\b/.test(tl)) {
       useZaraStore.getState().setGender('male');
+      wsSend({ type: 'gender', value: 'male' });
       addToast('Honorific updated: Sir');
     } else if (/\bi('m| am) a (woman|girl|female)\b/.test(tl)) {
       useZaraStore.getState().setGender('female');
+      wsSend({ type: 'gender', value: 'female' });
       addToast("Honorific updated: Ma'am");
     }
 
@@ -883,7 +910,7 @@ export default function App() {
       const appMatch = text.match(/(whatsapp|telegram|discord|slack|teams|signal|email)/i);
       setPendingMessage({
         app: appMatch ? appMatch[1].charAt(0).toUpperCase() + appMatch[1].slice(1) : 'WhatsApp',
-        appIcon: '💬',
+        appIcon: '\u{1F4AC}',
         recipient: msgMatch[1],
         message: msgMatch[2],
       });
@@ -894,17 +921,21 @@ export default function App() {
     addMessage('user', text);
     setZaraState('THINKING');
 
-    // Send to backend if Electron
+    // Send to Electron backend
     if (window.electron?.isElectron) {
       window.electron.sendCommand(text);
     } else {
-      // Demo response
+      // Send via WebSocket bridge to live Python backend
+      wsSend({ type: 'command', text });
+      // Fallback demo if backend offline
       setTimeout(() => {
-        setZaraState('TALKING');
-        const h = useZaraStore.getState().honorific;
-        addMessage('zara', `Processing your request, ${h}. "${text.substring(0, 60)}${text.length > 60 ? '...' : ''}"`);
-        setTimeout(() => setZaraState('STANDBY'), 1800);
-      }, 900);
+        if (useZaraStore.getState().zaraState === 'THINKING') {
+          setZaraState('TALKING');
+          const h = useZaraStore.getState().honorific;
+          addMessage('zara', `Processing your request, ${h}. "${text.substring(0, 60)}${text.length > 60 ? '...' : ''}"`);
+          setTimeout(() => setZaraState('STANDBY'), 1800);
+        }
+      }, 5000);
     }
   }, [addMessage, setZaraState, addToast, setPendingMessage]);
 

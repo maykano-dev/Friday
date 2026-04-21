@@ -107,19 +107,85 @@ export const useZaraStore = create((set, get) => ({
   },
   removeToast: (id) => set((s) => ({ toasts: s.toasts.filter((t) => t.id !== id) })),
 
-  // Claude capabilities in use
+  // WebSocket connection status
+  wsConnected: false,
+  setWsConnected: (v) => set({ wsConnected: v }),
+
+  // Claude capabilities
   claudeCapabilities: {
-    reasoning: true,
-    codeGeneration: true,
-    webSearch: true,
-    imageAnalysis: true,
-    documentAnalysis: true,
-    mathCalculations: true,
-    creativeWriting: true,
-    dataAnalysis: true,
-    multilingual: true,
-    memoryRetrieval: true,
-    taskPlanning: true,
-    errorAnalysis: true,
+    reasoning: true, codeGeneration: true, webSearch: true,
+    imageAnalysis: true, documentAnalysis: true, mathCalculations: true,
+    creativeWriting: true, dataAnalysis: true, multilingual: true,
+    memoryRetrieval: true, taskPlanning: true, errorAnalysis: true,
   },
 }));
+
+// ── WebSocket Bridge ───────────────────────────────────────────────
+// Connects to ws_bridge.py on port 8765 and hydrates the store live.
+const WS_URL = 'ws://localhost:8765';
+let _ws = null;
+let _reconnectTimer = null;
+
+function applySnapshot(snap, store) {
+  if (snap.zaraState)    store.setZaraState(snap.zaraState);
+  if (snap.honorific || snap.gender) {
+    store.setGender(snap.gender || store.gender);
+  }
+  if (typeof snap.volume === 'number') store.setVolume(snap.volume);
+  if (typeof snap.muted  === 'boolean') store.setMuted(snap.muted);
+  if (snap.liveTranscript) store.setLiveTranscript(snap.liveTranscript);
+  if (snap.speakerContext) store.setSpeakerContext(snap.speakerContext);
+  if (snap.apiHealth)    store.setApiHealth(snap.apiHealth);
+  if (Array.isArray(snap.conversation)) {
+    // bulk-load last 100
+    snap.conversation.forEach(m => store.addMessage(m.role, m.text));
+  }
+}
+
+export function connectWsBridge() {
+  if (_ws && _ws.readyState < 2) return; // already open/connecting
+
+  _ws = new WebSocket(WS_URL);
+
+  _ws.onopen = () => {
+    useZaraStore.getState().setWsConnected(true);
+    useZaraStore.getState().addToast('⚡ Backend connected');
+    if (_reconnectTimer) { clearTimeout(_reconnectTimer); _reconnectTimer = null; }
+  };
+
+  _ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      const store = useZaraStore.getState();
+      const { type, payload } = msg;
+
+      if (type === 'snapshot')   { applySnapshot(payload, store); return; }
+      if (type === 'state')      { store.setZaraState(payload.zaraState);
+                                   if (payload.gender) store.setGender(payload.gender);
+                                   return; }
+      if (type === 'metrics')    { store.setMetrics(payload); return; }
+      if (type === 'message')    { store.addMessage(payload.role, payload.text); return; }
+      if (type === 'transcript') { payload.live
+                                     ? store.setLiveTranscript(payload.text)
+                                     : store.pushTranscript(payload.text);
+                                   return; }
+      if (type === 'speaker')    { store.setSpeakerContext(payload.context); return; }
+      if (type === 'api_health') { store.setApiHealth(payload); return; }
+      if (type === 'volume')     { store.setVolume(payload.level); store.setMuted(payload.muted); return; }
+    } catch { /* ignore parse errors */ }
+  };
+
+  _ws.onclose = () => {
+    useZaraStore.getState().setWsConnected(false);
+    _reconnectTimer = setTimeout(connectWsBridge, 3000); // auto-reconnect
+  };
+
+  _ws.onerror = () => _ws.close();
+}
+
+// Expose send helper for commands from the UI
+export function wsSend(msg) {
+  if (_ws && _ws.readyState === 1) {
+    _ws.send(JSON.stringify(msg));
+  }
+}
