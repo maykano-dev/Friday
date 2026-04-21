@@ -197,7 +197,6 @@ def run_Zara():
             print(f"[Zara] Proactively detected error: {error_msg}")
 
             # Zara speaks up when she sees an error!
-            import local_voice
             # Shortened message for better UX
             local_voice.speak(
                 f"Sir, I noticed an error on your screen. Would you like me to help?")
@@ -241,7 +240,6 @@ def run_Zara():
     # ── 3.5. Start Wake Word Engine ─────────────────────────────────────
     try:
         from wake_word_engine import WakeWordEngine
-        import local_voice
         import pygame
         
         def wake_callback():

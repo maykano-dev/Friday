@@ -127,6 +127,7 @@ def _enqueue(msg_type: str, payload: dict):
 # ── Metrics sampler (every 2.5s) ──────────────────────────────────────────────
 
 async def _metrics_loop():
+    global _clients
     while True:
         await asyncio.sleep(2.5)
         if not _PSUTIL:
@@ -235,6 +236,7 @@ async def _handle_client_msg(msg: dict):
 # ── Broadcast loop ────────────────────────────────────────────────────────────
 
 async def _broadcast_loop():
+    global _clients
     while True:
         msg = await _queue.get()
         dead = set()
@@ -249,8 +251,7 @@ async def _broadcast_loop():
 # ── Server entry point ────────────────────────────────────────────────────────
 
 async def _serve():
-    global _queue
-    _queue = asyncio.Queue()
+    # _queue is now initialized in _run to avoid race conditions
     async with websockets.serve(_handler, HOST, PORT):
         print(f"[WS Bridge] Listening on ws://{HOST}:{PORT}")
         await asyncio.gather(_broadcast_loop(), _metrics_loop())
@@ -266,9 +267,10 @@ def start_bridge():
     global _loop
 
     def _run():
-        global _loop
+        global _loop, _queue
         _loop = asyncio.new_event_loop()
         asyncio.set_event_loop(_loop)
+        _queue = asyncio.Queue()  # Initialize queue here, inside the loop
         _loop.run_until_complete(_serve())
 
     t = threading.Thread(target=_run, daemon=True, name="ZaraWSBridge")

@@ -381,7 +381,7 @@ class ContinuousListener:
             except Exception as e:
                 print(f"[Ear] BG detector error (passing through): {e}")
 
-            print(f"\n\U0001f5e3\ufe0f You: {cleaned}")
+            print(f"\n[User]: {cleaned}")
 
             # Passive gender detection — update honorific from speech cues
             try:

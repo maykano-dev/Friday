@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, shell, session } = require('electron');
 const path = require('path');
 const { spawn } = require('child_process');
 const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
@@ -123,6 +123,25 @@ ipcMain.handle('zara:command', (_, text) => {
 
 // ── App Lifecycle ─────────────────────────────────────────────────────
 app.whenReady().then(() => {
+  // ── Content Security Policy ──────────────────────────────────────────
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [
+          [
+            "default-src 'self'",
+            "script-src 'self'" + (isDev ? " 'unsafe-eval'" : ""),
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+            "font-src 'self' https://fonts.gstatic.com",
+            "connect-src 'self' ws://localhost:8765 http://localhost:3000 ws://localhost:3000",
+            "img-src 'self' data: https:",
+          ].join('; '),
+        ],
+      },
+    });
+  });
+
   createMainWindow();
   createTray();
   // Start backend only in production (dev runs its own backend)
