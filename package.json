@@ -1,0 +1,59 @@
+{
+  "name": "zara-neural-dashboard",
+  "version": "2.0.0",
+  "description": "Zara AI Neural Command Center",
+  "main": "electron/main.js",
+  "homepage": "./",
+  "scripts": {
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "electron": "concurrently \"npm start\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron:build": "npm run build && electron-builder",
+    "pack": "electron-builder --dir",
+    "dist": "npm run build && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-scripts": "5.0.1",
+    "framer-motion": "^11.0.0",
+    "zustand": "^4.5.0",
+    "lucide-react": "^0.383.0",
+    "@tauri-apps/api": "^1.5.0"
+  },
+  "devDependencies": {
+    "electron": "^29.0.0",
+    "electron-builder": "^24.0.0",
+    "concurrently": "^8.0.0",
+    "wait-on": "^7.0.0"
+  },
+  "build": {
+    "appId": "ai.zara.dashboard",
+    "productName": "Zara",
+    "icon": "public/icon.png",
+    "win": {
+      "target": "nsis",
+      "icon": "public/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "installerIcon": "public/icon.ico",
+      "uninstallerIcon": "public/icon.ico",
+      "deleteAppDataOnUninstall": false
+    },
+    "files": ["build/**/*", "electron/**/*", "node_modules/**/*"],
+    "directories": {
+      "buildResources": "public",
+      "output": "dist"
+    },
+    "extraResources": [
+      { "from": "../", "to": "zara_backend", "filter": ["**/*.py", "*.py", "*.db", ".env"] }
+    ]
+  },
+  "eslintConfig": { "extends": ["react-app"] },
+  "browserslist": {
+    "production": [">0.2%", "not dead", "not op_mini all"],
+    "development": ["last 1 chrome version"]
+  }
+}

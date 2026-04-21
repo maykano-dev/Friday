@@ -45,3 +45,22 @@ zara_complete.zip
 zara-gguf_gguf/
 zara-model/
 assets/
+
+# Node / React / Electron
+node_modules/
+build/
+dist/
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+npm-debug.log*
+
+# DB & local state
+zara_brain.db
+zara_brain.db.bak
+chroma_db.bak/
+session_state.json
+last_screenshot.png
+friday_search_results.txt
+fix_zara_core.py
