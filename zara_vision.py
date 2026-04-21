@@ -107,28 +107,34 @@ class ZaraVision:
     # VISION QUERIES
     # ─────────────────────────────────────────────────────────
     
-    def _query_vision(self, image_b64: str, prompt: str) -> str:
-        """Send image to vision model."""
-        import ollama
+    def _query_vision(self, image_b64: str, prompt: str, timeout: int = 20) -> str:
+        """Send image to vision model with a thread-based timeout."""
+        result = ["Vision model timed out, Sir."]
         
-        try:
-            response = ollama.chat(
-                model=self.model,
-                messages=[{
-                    'role': 'user',
-                    'content': prompt,
-                    'images': [image_b64]
-                }],
-                options={'temperature': 0.2}  # Low temp for accuracy
-            )
-            return response['message']['content']
-        except Exception as e:
-            error_str = str(e)
-            if "memory" in error_str.lower() or "500" in error_str:
-                print(f"[Vision] CRITICAL: System memory insufficient for {self.model}. Try a smaller model or clear RAM.")
-                return f"I'm sorry Sir, my visual cortex requires more system memory to process this image. Current available: {error_str}"
-            print(f"[Vision] Query error: {e}")
-            return f"I encountered an error while analyzing the image: {e}"
+        def _call():
+            try:
+                import ollama
+                response = ollama.chat(
+                    model=self.model,
+                    messages=[{
+                        'role': 'user',
+                        'content': prompt,
+                        'images': [image_b64]
+                    }],
+                    options={'temperature': 0.2, 'num_predict': 150}
+                )
+                result[0] = response['message']['content']
+            except Exception as e:
+                error_str = str(e)
+                if "memory" in error_str.lower() or "500" in error_str:
+                    result[0] = f"I'm sorry Sir, my visual cortex requires more system memory to process this image."
+                else:
+                    result[0] = f"Vision unavailable: {e}"
+
+        t = threading.Thread(target=_call, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        return result[0]
     
     # ─────────────────────────────────────────────────────────
     # HIGH-LEVEL VISION COMMANDS
@@ -164,11 +170,20 @@ class ZaraVision:
         prompt = f"Find the '{description}' in this screenshot. Return ONLY the approximate center coordinates in format 'x,y'. If not found, return 'None'."
         
         response = self._query_vision(img, prompt)
-        
+        return self._parse_coords(response)
+
+    def _parse_coords(self, response: str) -> Optional[Tuple[int, int]]:
+        """Robustly parse coordinates from LLM response."""
         import re
-        match = re.search(r'(\d+)\s*[,]\s*(\d+)', response)
-        if match:
-            return (int(match.group(1)), int(match.group(2)))
+        patterns = [
+            r'\((\d+),\s*(\d+)\)',          # (450, 320)
+            r'x[=:\s]+(\d+).*?y[=:\s]+(\d+)',  # x=450 y=320
+            r'(\d+)[,\s]+(\d+)',             # 450, 320 or 450 320
+        ]
+        for pat in patterns:
+            match = re.search(pat, response, re.I)
+            if match:
+                return (int(match.group(1)), int(match.group(2)))
         return None
     
     def click_on(self, description: str) -> bool:
@@ -311,21 +326,30 @@ class ZaraVision:
     # ─────────────────────────────────────────────────────────
     
     def monitor_for_change(self, check_interval: float = 1.0, timeout: float = 30.0) -> Optional[str]:
-        """Monitor screen for changes and return what changed."""
-        import hashlib
-        
-        initial = self.capture_screen()
-        initial_hash = hashlib.md5(initial.encode()).hexdigest()
+        """Monitor screen for structural changes using numpy comparison."""
+        import base64, io
+        from PIL import Image
+
+        def get_structural_hash(img_b64):
+            # Downscale and convert to grayscale for robust comparison
+            img = Image.open(io.BytesIO(base64.b64decode(img_b64)))
+            small = img.resize((32, 32)).convert("L")
+            return np.array(small)
+
+        initial_arr = get_structural_hash(self.capture_screen())
         
         start_time = time.time()
         while time.time() - start_time < timeout:
             time.sleep(check_interval)
-            current = self.capture_screen()
-            current_hash = hashlib.md5(current.encode()).hexdigest()
+            current_b64 = self.capture_screen()
+            current_arr = get_structural_hash(current_b64)
             
-            if current_hash != initial_hash:
+            # Calculate mean difference between pixels (0-255)
+            diff = np.abs(initial_arr.astype(int) - current_arr.astype(int)).mean()
+            
+            if diff > 15:   # threshold: average change > 15/255
                 prompt = "Compare this new screenshot with the previous state. What changed? Describe only the differences."
-                return self._query_vision(current, prompt)
+                return self._query_vision(current_b64, prompt)
         
         return None
     

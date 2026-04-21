@@ -5,16 +5,32 @@
   "volume_level": 60,
   "preferred_genres": [],
   "favorite_artists": [
-    "chris brown."
+    "Chris Brown"
   ],
   "recently_played": [
+    {
+      "song": "e music on spotify",
+      "artist": ""
+    },
+    {
+      "song": "music on spotify music on spotify",
+      "artist": ""
+    },
+    {
+      "song": "zara music on spotify",
+      "artist": ""
+    },
+    {
+      "song": "Stonebwoy on spotify",
+      "artist": ""
+    },
     {
       "song": "these are the music on spotify",
       "artist": ""
     },
     {
       "song": "freaky friday",
-      "artist": "chris brown."
+      "artist": "Chris Brown"
     },
     {
       "song": "goodbye Chris Brown",

@@ -18,6 +18,7 @@ import time
 from typing import Any, Dict, Optional
 
 import pyautogui
+import state
 
 
 SCRIPT_TIMEOUT_SECONDS = 120
@@ -52,39 +53,29 @@ def is_app_running(app_name: str) -> bool:
 
 
 def focus_app(app_name: str) -> bool:
-    """Bring an app to the foreground using multiple methods."""
-    import pyautogui
-    import time
-    
+    """Bring an app to the foreground using win32gui for precision."""
     try:
-        if "spotify" in app_name.lower():
-            # Use Alt+Tab to switch to Spotify (often more reliable)
-            pyautogui.keyDown("alt")
-            pyautogui.press("tab")
-            pyautogui.keyUp("alt")
-            time.sleep(0.5)
+        import win32gui, win32con, ctypes
+        
+        def find_and_focus(hwnd, _):
+            if win32gui.IsWindowVisible(hwnd):
+                title = win32gui.GetWindowText(hwnd).lower()
+                if app_name.lower() in title:
+                    # Found the window
+                    if win32gui.IsIconic(hwnd):
+                        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                    
+                    # Win10/11 focus workaround
+                    ctypes.windll.user32.AllowSetForegroundWindow(0xFFFFFFFF)
+                    win32gui.SetForegroundWindow(hwnd)
+                    return False   # stop enumeration
             return True
-    except:
-        pass
-    
-    # Fallback: try to find window by title
-    try:
-        import pygetwindow as gw
-        windows = gw.getWindowsWithTitle(app_name)
-        if not windows:
-            all_windows = gw.getAllWindows()
-            windows = [w for w in all_windows if app_name.lower() in w.title.lower()]
-            
-        if windows:
-            win = windows[0]
-            if win.isMinimized:
-                win.restore()
-            win.activate()
-            return True
-    except:
-        pass
-    
-    return False
+
+        win32gui.EnumWindows(find_and_focus, None)
+        return True
+    except Exception as e:
+        print(f"[Zara Action] focus_app failed for {app_name}: {e}")
+        return False
 
 
 def is_app_installed(app_name: str) -> bool:
@@ -262,7 +253,6 @@ class ActionExecutor:
             print(
                 f"[Zara Action] create_dir UNEXPECTED {type(e).__name__}: {e}")
             return
-            return
 
         if os.path.isdir(abs_path):
             print(f"[Zara Action] created directory: {abs_path}")
@@ -428,6 +418,7 @@ class ActionExecutor:
                 cls.spotify_play_recommended()
             else:
                 os.startfile("spotify:")
+                state.set_media_playing(True)
                 print("[Zara Action] Opened Spotify")
 
         # ── YOUTUBE MUSIC ───────────────────────────────────────
@@ -438,6 +429,7 @@ class ActionExecutor:
             else:
                 url = "https://music.youtube.com"
             webbrowser.open(url)
+            state.set_media_playing(True)
             print(f"[Zara Action] Opened YouTube Music")
         
         # ── APPLE MUSIC ─────────────────────────────────────────
@@ -446,6 +438,7 @@ class ActionExecutor:
                 os.startfile("itms-apps://")
             else:
                 subprocess.Popen(["open", "-a", "Music"])
+            state.set_media_playing(True)
 
         # ── OTHER APPS ──────────────────────────────────────────
         elif platform.system() == "Windows":
@@ -746,6 +739,16 @@ Return purely valid JSON without markdown tags."""
     @staticmethod
     def media_control(payload: Dict[str, Any]) -> None:
         command = payload.get("command", "").lower()
+        announcements = {
+            "volume_up": "Volume increased, Sir.",
+            "volume_down": "Volume lowered, Sir.",
+            "mute": "System volume toggled, Sir.",
+            "play_pause": "Toggled playback, Sir.",
+            "next": "Next track, Sir.",
+            "previous": "Previous track, Sir.",
+            "pause": "Music paused, Sir.",
+            "stop": "Music stopped, Sir.",
+        }
 
         try:
             import pyautogui
@@ -755,35 +758,47 @@ Return purely valid JSON without markdown tags."""
                 for _ in range(5):
                     pyautogui.press("volumeup")
                     time.sleep(0.03)
-                payload["announcement"] = "Volume increased, Sir."
                 print("[Zara Action] Volume up")
 
             elif command == "volume_down" or command == "down":
                 for _ in range(5):
                     pyautogui.press("volumedown")
                     time.sleep(0.03)
-                payload["announcement"] = "Volume lowered, Sir."
                 print("[Zara Action] Volume down")
 
             elif command == "mute":
                 pyautogui.press("volumemute")
-                payload["announcement"] = "System volume toggled, Sir."
                 print("[Zara Action] Mute")
 
             elif command == "play_pause":
                 pyautogui.press("playpause")
-                payload["announcement"] = "Toggled playback, Sir."
-                print("[Zara Action] Play/Pause")
+                # Toggle media playing state
+                current = getattr(state.media_playing, 'value', False)
+                state.set_media_playing(not current)
+                print(f"[Zara Action] Play/Pause (State: {not current})")
+
+            elif command == "pause" or command == "stop":
+                pyautogui.press("pause") # or stop, depending on app support
+                state.set_media_playing(False)
+                print(f"[Zara Action] Media {command}")
 
             elif command == "next":
                 pyautogui.press("nexttrack")
-                payload["announcement"] = "Next track, Sir."
                 print("[Zara Action] Next")
 
             elif command == "previous":
                 pyautogui.press("prevtrack")
-                payload["announcement"] = "Previous track, Sir."
                 print("[Zara Action] Previous")
+
+            # Speak the announcement regardless of how it was called
+            msg = announcements.get(command)
+            if msg:
+                payload["announcement"] = msg
+                try:
+                    import local_voice
+                    local_voice.speak(msg)
+                except:
+                    pass
 
         except Exception as e:
             print(f"[Zara Action] Media control failed: {e}")
@@ -849,46 +864,31 @@ Return purely valid JSON without markdown tags."""
             focus_app("spotify")
             time.sleep(1)
         
-        # METHOD 1: Use the actual search box via Ctrl+L
-        pyautogui.hotkey("ctrl", "l")
-        time.sleep(0.5)
+        # METHOD 1: Use Spotify's built-in keyboard shortcut to open search
+        pyautogui.hotkey("ctrl", "k")
+        time.sleep(0.8)
         
         # Clear existing text
         pyautogui.hotkey("ctrl", "a")
         time.sleep(0.2)
         
         # Type the query slowly (more reliable)
-        pyautogui.write(query, interval=0.05)
-        time.sleep(0.8)
+        pyautogui.write(query, interval=0.04)
+        time.sleep(0.6)
         
         # Press Enter to search
         pyautogui.press("enter")
-        time.sleep(2)  # Wait for results
+        time.sleep(2.0)  # Wait for results
         
-        # METHOD 2: Click the first song using coordinates
-        # For most screen resolutions, the first song is around here
-        screen_width, screen_height = pyautogui.size()
-        
-        # First song is typically at ~35% from top, ~15% from left
-        click_x = int(screen_width * 0.15)
-        click_y = int(screen_height * 0.35)
-        
-        # Move there and double-click
-        pyautogui.moveTo(click_x, click_y, duration=0.3)
-        pyautogui.doubleClick()
-        
-        # Wait a moment for playback to start
-        time.sleep(1)
-        
-        # Fallback: Press Tab then Enter
-        pyautogui.press("tab")
-        time.sleep(0.2)
-        pyautogui.press("tab")
-        time.sleep(0.2)
+        # Tab to first track result and play it
+        # Spotify search results: Tabx3 reaches first song in most layouts
+        for _ in range(3):
+            pyautogui.press("tab")
+            time.sleep(0.15)
         pyautogui.press("enter")
-        time.sleep(0.3)
-        pyautogui.press("enter")
+        time.sleep(0.5)
         
+        state.set_media_playing(True)
         print(f"[Zara Action] Spotify: playback command sent for '{query}'")
 
     @classmethod
@@ -914,4 +914,5 @@ Return purely valid JSON without markdown tags."""
         time.sleep(1)
         pyautogui.press("enter")  # Play
 
+        state.set_media_playing(True)
         print("[Zara Action] Playing Liked Songs")

@@ -22,14 +22,20 @@ from ui_engine import ContextCard, NeuralVisualizer, WebResultCard
 from proactive_engine import ProactiveEngine
 from session_manager import get_session_manager
 from agent_orchestrator import get_orchestrator
-from output_router import get_router
 from secure_sandbox import get_sandbox
+from output_router import get_router
+from engagement_engine import EngagementEngine
+import action_engine
+import state
 
 ui = None
 session_mgr = None
 router = None
 orchestrator = None
 sandbox = None
+
+_utterance_lock = threading.Lock()
+_output_router = get_router()
 
 
 def get_greeting() -> str:
@@ -40,30 +46,52 @@ def get_greeting() -> str:
 
 def _process_utterance(text: str, proactive) -> None:
     """Handle a single user utterance with immediate visual feedback."""
-    global ui
+    global ui, session_mgr, _output_router
+    
+    with _utterance_lock:
+        # IMMEDIATE FEEDBACK
+        if ui:
+            ui.set_user_text(text)
+            ui.set_state("THINKING")
+            ui.set_subtitle_text("...")
 
-    # IMMEDIATE FEEDBACK
-    if ui:
-        ui.set_user_text(text)
-        ui.set_state("LISTENING")
+        if proactive:
+            proactive.notify_user_spoke()
 
-    time.sleep(0.05)  # Let UI update
+        zara_reply = zara_core.generate_response(text)
+        print(f"Zara (Raw): {zara_reply}")
 
-    if ui:
-        ui.set_state("THINKING")
-        ui.set_subtitle_text("...")
+        if session_mgr and zara_reply:
+            session_mgr.record_exchange(text, zara_reply)
 
-    if proactive:
-        proactive.notify_user_spoke()
+        # Smart Output Routing
+        routed = _output_router.route(zara_reply)
+        
+        if routed.visual and ui:
+            ui.context_cards.append(ContextCard("TEXT", routed.visual))
+            
+        if routed.action:
+            try:
+                executor = action_engine.ActionExecutor()
+                executor.execute_payload(routed.action)
+            except Exception as e:
+                print(f"[Main] Action execution failed: {e}")
 
-    zara_reply = zara_core.generate_response(text)
-    print(f"Zara: {zara_reply}")
+        if routed.spoken:
+            if ui:
+                ui.set_subtitle_text(routed.spoken)
+                ui.set_state("TALKING")
+            local_voice.speak(routed.spoken)
 
-    time.sleep(0.8)
-    if ui:
-        ui.set_subtitle_text("")
-        ui.set_user_text("")
-        ui.set_state("STANDBY")
+        # Wait for speech to finish before releasing lock
+        deadline = time.time() + 30  # Safety timeout
+        while getattr(state.is_talking, 'value', False) and time.time() < deadline:
+            time.sleep(0.05)
+
+        if ui:
+            ui.set_subtitle_text("")
+            ui.set_user_text("")
+            ui.set_state("STANDBY")
 
 
 def run_Zara():
@@ -166,6 +194,17 @@ def run_Zara():
     # ── 3. Boot background daemons ──────────────────────────────────────
     proactive = ProactiveEngine(ui=ui, interval_seconds=1800)
     proactive.start()
+
+    # Smart Engagement Engine (Idle + File Scanning)
+    def _proactive_callback(prompt):
+        threading.Thread(
+            target=_process_utterance,
+            args=(prompt, proactive),
+            daemon=True
+        ).start()
+
+    engagement = EngagementEngine(idle_timeout_seconds=600, scan_dir=".")
+    engagement.start(callback=_proactive_callback)
 
     try:
         from learning_engine import LearningEngine

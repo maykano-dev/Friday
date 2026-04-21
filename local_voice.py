@@ -13,6 +13,9 @@ import pygame
 import pyautogui
 import time
 import state
+from ctypes import cast, POINTER
+from comtypes import CLSCTX_ALL
+from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
 
 # ── Edge-TTS ────────────────────────────────────────────────────────────────
 try:
@@ -25,6 +28,9 @@ VOICE = "en-US-JennyNeural"
 # +5% rate = alert, -2Hz pitch = body/resonance
 RATE = "+5%"
 PITCH = "-2Hz"
+
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.environ.get("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 
 _TTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -47,6 +53,7 @@ _ducking_active = False
 _ducking_lock = threading.Lock()
 _ducking_enabled = False  # DISABLED BY DEFAULT - too buggy
 _startup_complete = False
+_saved_volume: float = -1.0
 
 def enable_ducking():
     global _ducking_enabled
@@ -59,62 +66,52 @@ def disable_ducking():
     print("[Voice] Volume ducking disabled")
 
 def _lower_media_volume():
-    """Lower system volume when Zara starts speaking."""
-    global _ducking_active
-    
+    """Lower system volume when Zara starts speaking using pycaw."""
+    global _ducking_active, _saved_volume
     if not _ducking_enabled:
         return
-    
     with _ducking_lock:
         if _ducking_active:
             return
-        
         try:
-            import pyautogui
-            import time
-            
-            # Simple: just press volume down a few times
-            for _ in range(5):
-                pyautogui.press("volumedown")
-                time.sleep(0.03)
-            
+            devices = AudioUtilities.GetSpeakers()
+            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+            volume = cast(interface, POINTER(IAudioEndpointVolume))
+            _saved_volume = volume.GetMasterVolumeLevelScalar()
+            target = max(0.0, _saved_volume - 0.4)   # duck by 40%
+            volume.SetMasterVolumeLevelScalar(target, None)
             _ducking_active = True
-            print("[Voice] Volume ducked")
-            
+            print(f"[Voice] Volume ducked from {_saved_volume:.2f} to {target:.2f}")
         except Exception as e:
             print(f"[Voice] Ducking failed: {e}")
 
 def _restore_media_volume():
-    """Restore media volume after Zara finishes speaking."""
-    global _ducking_active
-    
+    """Restore media volume after Zara finishes speaking using pycaw."""
+    global _ducking_active, _saved_volume
     if not _ducking_enabled:
         return
-    
     with _ducking_lock:
         if not _ducking_active:
             return
-        
         try:
-            import pyautogui
-            import time
-            
-            for _ in range(5):
-                pyautogui.press("volumeup")
-                time.sleep(0.03)
-            
+            if _saved_volume >= 0.0:
+                devices = AudioUtilities.GetSpeakers()
+                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+                volume = cast(interface, POINTER(IAudioEndpointVolume))
+                volume.SetMasterVolumeLevelScalar(_saved_volume, None)
+                print(f"[Voice] Volume restored to {_saved_volume:.2f}")
             _ducking_active = False
-            print("[Voice] Volume restored")
-            
+            _saved_volume = -1.0
         except Exception as e:
             print(f"[Voice] Restore failed: {e}")
 
 
 def mark_startup_complete():
     """Flag that the initial greeting is done."""
-    global _startup_complete
+    global _startup_complete, _ducking_enabled
     _startup_complete = True
-    print("[Voice] Startup complete - ducking enabled")
+    _ducking_enabled = True
+    print("[Voice] Startup complete — ducking enabled")
 
 
 def _sync_talking_state(channels=None) -> None:
@@ -149,9 +146,11 @@ def _warmup() -> None:
 threading.Thread(target=_warmup, daemon=True).start()
 
 
-# ── Renderer Thread ─────────────────────────────────────────────────────────
+
+
+
 def _renderer_worker() -> None:
-    """Renders text to in-memory audio (BytesIO) via Edge-TTS streaming."""
+    """Renders text to in-memory audio (BytesIO)."""
     from io import BytesIO
 
     while True:
@@ -168,20 +167,30 @@ def _renderer_worker() -> None:
                 _sync_talking_state()
                 continue
 
-            if edge_tts is None:
-                _text_queue.task_done()
-                _sync_talking_state()
-                continue
-
             try:
-                # Stream audio chunks directly into memory — no disk I/O
                 buf = BytesIO()
-                comm = edge_tts.Communicate(
-                    text, VOICE, rate=RATE, pitch=PITCH)
-                for chunk in asyncio.run(_collect_audio(comm)):
-                    if _interrupted.is_set():
-                        break
-                    buf.write(chunk)
+                # 1. Try ElevenLabs if API key is present
+                if ELEVENLABS_API_KEY:
+                    audio_data = asyncio.run(_render_elevenlabs(text))
+                    if audio_data:
+                        buf.write(audio_data)
+                    else:
+                        # Fallback to Edge-TTS if ElevenLabs failed
+                        comm = edge_tts.Communicate(text, VOICE, rate=RATE, pitch=PITCH)
+                        for chunk in asyncio.run(_collect_audio(comm)):
+                            if _interrupted.is_set(): break
+                            buf.write(chunk)
+                # 2. Otherwise use Edge-TTS
+                elif edge_tts:
+                    comm = edge_tts.Communicate(text, VOICE, rate=RATE, pitch=PITCH)
+                    for chunk in asyncio.run(_collect_audio(comm)):
+                        if _interrupted.is_set(): break
+                        buf.write(chunk)
+                else:
+                    print("[Zara TTS] No renderer available.")
+                    _text_queue.task_done()
+                    continue
+
                 buf.seek(0)
             except Exception as e:
                 print(f"[Zara TTS] render error: {e}")
@@ -201,6 +210,9 @@ def _renderer_worker() -> None:
         except Exception as e:
             print(f"[Zara TTS] renderer crash: {e}")
             _sync_talking_state()
+            time.sleep(1)
+            print(f"[Zara TTS] renderer crash: {e}")
+            _sync_talking_state()
 
 
 async def _collect_audio(comm) -> list[bytes]:
@@ -210,6 +222,28 @@ async def _collect_audio(comm) -> list[bytes]:
         if chunk["type"] == "audio":
             chunks.append(chunk["data"])
     return chunks
+
+
+async def _render_elevenlabs(text: str) -> bytes:
+    """Render text using ElevenLabs streaming API."""
+    import httpx
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}/stream"
+    headers = {"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"}
+    body = {
+        "text": text,
+        "model_id": "eleven_turbo_v2",
+        "voice_settings": {"stability": 0.5, "similarity_boost": 0.75}
+    }
+    try:
+        async with httpx.AsyncClient() as client:
+            async with client.stream("POST", url, json=body, headers=headers) as r:
+                if r.status_code != 200:
+                    print(f"[Zara TTS] ElevenLabs error: {r.status_code}")
+                    return b""
+                return await r.aread()
+    except Exception as e:
+        print(f"[Zara TTS] ElevenLabs connection error: {e}")
+        return b""
 
 
 # ── Player Thread (Dual-Channel Pre-loading) ────────────────────────────────
@@ -268,17 +302,29 @@ def _player_worker() -> None:
         except Exception as e:
             print(f"[Zara TTS] player crash: {e}")
             state.set_talking(False)
-            _restore_media_volume()  # ← Also restore on crash
+            # DO NOT restore here — queue-empty path handles it
 
 
 # ── Thread Lifecycle ────────────────────────────────────────────────────────
 def _ensure_workers() -> None:
     global _renderer_thread, _player_thread
     if _renderer_thread is None or not _renderer_thread.is_alive():
+        while not _text_queue.empty():   # drain stale items first
+            try:
+                _text_queue.get_nowait()
+                _text_queue.task_done()
+            except:
+                break
         _renderer_thread = threading.Thread(
             target=_renderer_worker, daemon=True)
         _renderer_thread.start()
     if _player_thread is None or not _player_thread.is_alive():
+        while not _audio_queue.empty():
+            try:
+                _audio_queue.get_nowait()
+                _audio_queue.task_done()
+            except:
+                break
         _player_thread = threading.Thread(target=_player_worker, daemon=True)
         _player_thread.start()
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import re
+import threading
 from collections import deque
 from typing import Dict, List, Optional, Any
 
@@ -19,6 +20,7 @@ from user_prefs import get_prefs
 from zara_vision import get_vision, VisionMode
 
 _in_handler = False
+_handler_lock = threading.Lock()
 _in_vision_handler = False
 
 # ── Groq Cloud API ──────────────────────────────────────────────────────────
@@ -174,7 +176,7 @@ VOICE_INGEST_TRIGGERS = (
 
 # Rolling short-term memory: only user/assistant turns live here.
 # The system prompt is prepended fresh on every call, so it never gets evicted.
-_history: Deque[Dict[str, str]] = deque(maxlen=MAX_MESSAGES)
+_history: deque[Dict[str, str]] = deque(maxlen=MAX_MESSAGES)
 
 
 def _extract_save_payload(user_text: str) -> Optional[str]:
@@ -379,6 +381,9 @@ def _build_messages(
         elif m.startswith("Zara:"):
             messages.append(
                 {"role": "assistant", "content": m.replace("Zara: ", "", 1)})
+        elif m.startswith("Friday:"):
+            messages.append(
+                {"role": "assistant", "content": m.replace("Friday: ", "", 1)})
 
     # Chroma Context Injection
     semantic_matches = memory_vault.semantic_search(user_text)
@@ -399,9 +404,11 @@ def generate_response(user_text: str) -> str:
     """Send user_text to the best available endpoint and return reply."""
     global _in_handler
 
-    if _in_handler:
-        print("[Zara] WARNING: Recursive handler call detected, using LLM fallback")
-        return _generate_llm_response(user_text)
+    with _handler_lock:
+        if _in_handler:
+            print("[Zara] WARNING: Recursive handler call detected, using LLM fallback")
+            return _generate_llm_response(user_text)
+        _in_handler = True
 
     if not user_text or not user_text.strip():
         return "I didn't catch that."
@@ -851,13 +858,9 @@ def generate_response(user_text: str) -> str:
         "pypi": lambda txt: _handle_pypi(txt),
         "pip package": lambda txt: _handle_pypi(txt),
 
-        # Food
-        "recipe": lambda txt: _handle_recipe(txt),
-        "how do i make": lambda txt: _handle_recipe(txt),
-        "how to cook": lambda txt: _handle_recipe(txt),
-        "how to bake": lambda txt: _handle_recipe(txt),
-
         # Space & Science
+        "nasa picture": lambda txt: _handle_nasa_apod(),
+        "astronomy picture": lambda txt: _handle_nasa_apod(),
         "nasa": lambda txt: _handle_nasa_apod(),
         "space picture": lambda txt: _handle_nasa_apod(),
         "astronomy": lambda txt: _handle_astronomy(txt),
@@ -867,6 +870,7 @@ def generate_response(user_text: str) -> str:
         "iss": lambda txt: _handle_iss_location(),
         "space station": lambda txt: _handle_iss_location(),
         "spacex": lambda txt: _handle_spacex_launch(),
+        "next launch": lambda txt: _handle_spacex_launch(),
         "rocket launch": lambda txt: _handle_spacex_launch(),
 
         # Utility
@@ -888,7 +892,7 @@ def generate_response(user_text: str) -> str:
         "what do you know": lambda txt: _handle_what_can_you_do(),
         "help me understand": lambda txt: _handle_what_can_you_do(),
 
-        # Direct web search
+        # Web Interaction
         "google": lambda txt: _handle_web_search_direct(txt),
         "search for": lambda txt: _handle_web_search_direct(txt),
         "search the web": lambda txt: _handle_web_search_direct(txt),
@@ -901,7 +905,7 @@ def generate_response(user_text: str) -> str:
         "fill form": lambda txt: _handle_fill_form(txt),
         "submit form": lambda txt: _handle_fill_form(txt),
 
-        # Entertainment & Media
+        # Media Search
         "movie": lambda txt: _handle_movie_info(txt),
         "film": lambda txt: _handle_movie_info(txt),
         "book": lambda txt: _handle_book_info(txt),
@@ -909,17 +913,12 @@ def generate_response(user_text: str) -> str:
         "pokemon": lambda txt: _handle_pokemon(txt),
         "pokémon": lambda txt: _handle_pokemon(txt),
 
-        # Space & Science
-        "nasa picture": lambda txt: _handle_nasa_apod(),
-        "astronomy picture": lambda txt: _handle_nasa_apod(),
-        "iss": lambda txt: _handle_iss_location(),
-        "space station": lambda txt: _handle_iss_location(),
-        "spacex": lambda txt: _handle_spacex_launch(),
-        "next launch": lambda txt: _handle_spacex_launch(),
-
-        # Food
+        # Food & Recipes
         "recipe": lambda txt: _handle_recipe(txt),
         "how to make": lambda txt: _handle_recipe(txt),
+        "how do i make": lambda txt: _handle_recipe(txt),
+        "how to cook": lambda txt: _handle_recipe(txt),
+        "how to bake": lambda txt: _handle_recipe(txt),
         "cook": lambda txt: _handle_recipe(txt),
 
         # Music & Media
@@ -927,6 +926,7 @@ def generate_response(user_text: str) -> str:
         "play song": lambda txt: _handle_play_music(txt),
         "play some": lambda txt: _handle_play_music(txt),
         "put on": lambda txt: _handle_play_music(txt),
+        "listen to": lambda txt: _handle_play_music(txt),
         "pause music": lambda txt: _handle_play_music(txt),
         "pause song": lambda txt: _handle_play_music(txt),
         "next song": lambda txt: _handle_play_music(txt),
@@ -934,6 +934,11 @@ def generate_response(user_text: str) -> str:
         "skip this": lambda txt: _handle_play_music(txt),
         "previous song": lambda txt: _handle_play_music(txt),
         "spotify": lambda txt: _handle_play_music(txt) if "play" in txt.lower() else None,
+        
+        # Contextual music guards
+        "play": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["music", "song", "spotify", "artist", "album", "track", "by "]) else None,
+        "song": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "listen", "put on", "this", "next", "previous"]) else None,
+        "music": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "listen", "put on", "some", "turn up", "turn down"]) else None,
 
         # Volume control
         "volume up": lambda txt: _handle_volume("up"),
@@ -952,26 +957,13 @@ def generate_response(user_text: str) -> str:
         "read the": lambda txt: _handle_vision_command(txt),
         "is there an error": lambda txt: _handle_vision_command(txt),
         "analyze the screen": lambda txt: _handle_vision_command(txt),
+        "analyze this": lambda txt: _handle_vision_command(txt),
+        "what window": lambda txt: _handle_vision_command(txt),
+        
+        # App launching
         "open spotify": lambda txt: _handle_open_app(txt),
         "open chrome": lambda txt: _handle_open_app(txt),
         "launch": lambda txt: _handle_open_app(txt),
-        
-        # Music - catch ALL variations
-        "play": lambda txt: _handle_play_music(txt),
-        "song": lambda txt: _handle_play_music(txt),
-        "music": lambda txt: _handle_play_music(txt),
-        "spotify": lambda txt: _handle_play_music(txt),
-        " by ": lambda txt: _handle_play_music(txt),
-        "put on": lambda txt: _handle_play_music(txt),
-        "listen to": lambda txt: _handle_play_music(txt),
-        
-        # Vision - Awareness
-        "what do you see": lambda txt: _handle_vision_command(txt),
-        "what's on my screen": lambda txt: _handle_vision_command(txt),
-        "look at": lambda txt: _handle_vision_command(txt),
-        "analyze this": lambda txt: _handle_vision_command(txt),
-        "is there an error": lambda txt: _handle_vision_command(txt),
-        "what window": lambda txt: _handle_vision_command(txt),
         
         # Window management
         "switch to": lambda txt: _handle_window_command(txt),
@@ -987,11 +979,11 @@ def generate_response(user_text: str) -> str:
         "open windows": lambda txt: _handle_window_command(txt),
         "show desktop": lambda txt: _handle_window_command(txt),
         
-        # Catch artist names
-        "chris brown": lambda txt: _handle_play_music(txt),
-        "drake": lambda txt: _handle_play_music(txt),
-        "stonebwoy": lambda txt: _handle_play_music(txt),
-        "burna boy": lambda txt: _handle_play_music(txt),
+        # Catch common artist names for direct music triggers
+        "chris brown": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None,
+        "drake": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None,
+        "stonebwoy": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None,
+        "burna boy": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None,
     }
 
     matched_keyword = None
@@ -1033,7 +1025,8 @@ def generate_response(user_text: str) -> str:
             traceback.print_exc()
             return _generate_llm_response(user_text)
         finally:
-            _in_handler = False
+            with _handler_lock:
+                _in_handler = False
 
     # Check if this is a research query
     research_keywords = ["search", "find", "look up",
@@ -1228,7 +1221,12 @@ def _handle_weather(query: str) -> Optional[str]:
     try:
         from free_web_tools import get_web_tools
         tools = get_web_tools()
-        city = query.split()[-1] if len(query.split()) > 1 else "London"
+        
+        import re
+        # Find city after "in" or "for"
+        city_match = re.search(r'(?:weather|forecast|temperature)\s+(?:in|for|at)\s+([A-Za-z\s]+?)(?:\?|$)', query, re.I)
+        city = city_match.group(1).strip() if city_match else query.split()[-1].rstrip("?.!")
+        
         return tools.get_weather(city)
     except Exception as e:
         print(f"[Zara Weather Handler] Error: {e}")

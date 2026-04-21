@@ -69,8 +69,9 @@ class ZaraPreferences:
         self.prefs["recently_played"] = self.prefs["recently_played"][:10]
         
         # Track favorite artists
-        if artist.lower() and artist.lower() not in [a.lower() for a in self.prefs["favorite_artists"]]:
-            self.prefs["favorite_artists"].append(artist)
+        sanitized_artist = artist.strip().rstrip(".,!?;: ")
+        if sanitized_artist and sanitized_artist.lower() not in [a.lower() for a in self.prefs["favorite_artists"]]:
+            self.prefs["favorite_artists"].append(sanitized_artist)
             self.prefs["favorite_artists"] = self.prefs["favorite_artists"][:20]
         
         self._save()

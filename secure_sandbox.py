@@ -57,8 +57,8 @@ class SecureSandbox:
         'urllib', 'http', 'ftplib', 'smtplib',
     }
 
-    # Modules that are completely blocked
-    BLOCKED_MODULES = {
+    # Builtins that are completely blocked
+    BLOCKED_BUILTINS = {
         'eval', 'exec', 'compile', '__import__',
         'open', 'file', 'input', 'raw_input',
     }
@@ -143,8 +143,8 @@ class SecureSandbox:
         """Check if a module import is allowed."""
         base_module = module_name.split('.')[0]
 
-        if base_module in self.BLOCKED_MODULES:
-            concerns.append(f"Blocked module import: {module_name}")
+        if base_module in self.BLOCKED_BUILTINS:
+            concerns.append(f"Blocked builtin/module import: {module_name}")
             blocked.append(f"import {module_name}")
         elif base_module in self.RESTRICTED_MODULES:
             concerns.append(f"Restricted module import: {module_name}")
@@ -213,7 +213,7 @@ import sys
 import builtins
 
 # Restrict dangerous builtins
-BLOCKED_BUILTINS = {list(self.BLOCKED_MODULES)}
+BLOCKED_BUILTINS = {list(self.BLOCKED_BUILTINS)}
 for name in BLOCKED_BUILTINS:
     if hasattr(builtins, name):
         setattr(builtins, name, None)

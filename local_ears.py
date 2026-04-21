@@ -18,6 +18,7 @@ import threading
 import requests
 import io
 from queue import Queue
+from collections import deque
 
 import state
 import local_voice
@@ -33,6 +34,7 @@ if os.path.exists(_env_path):
                 os.environ.setdefault(_k.strip(), _v.strip())
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 
 # VAD Lazy Loader
 _vad_model = None
@@ -125,31 +127,24 @@ class ContinuousListener:
         if not text or len(text) < 2:
             return None
 
-        # Remove wake words
-        wake_words = ["zara", "hey zara", "okay zara", "hi zara", "hello zara"]
-        text_lower = text.lower().strip()
-
-        matched_wake = False
-        for wake in wake_words:
-            if text_lower.startswith(wake):
-                # Remove the wake word but preserve the command
-                text = text[len(wake):].strip()
-                text = text.lstrip(",.!?;: ")
-                if text:
-                    print(f"[Ear] Command after wake word: '{text}'")
-                else:
-                    print(f"[Ear] Wake word only - no command")
-                matched_wake = True
+        # Handle just "Zara" (catchall)
+        # Loop to handle repeated wake words like "Zara, zara..."
+        while True:
+            text_lower = text.lower().strip()
+            found = False
+            for wake in wake_words + ["zara"]:
+                if text_lower.startswith(wake):
+                    text = text[len(wake):].strip()
+                    text = text.lstrip(",.!?;: ")
+                    found = True
+                    break
+            if not found or not text:
                 break
-
-        # Handle just "Zara" (catchall if it wasn't in the list or if list check skipped)
-        if not matched_wake and text_lower.startswith("zara"):
-            text = text[4:].strip()
-            text = text.lstrip(",.!?;: ")
-            if text:
-                print(f"[Ear] Command after wake word: '{text}'")
-            else:
-                print(f"[Ear] Wake word only - no command")
+        
+        if text:
+            print(f"[Ear] Final command: '{text}'")
+        else:
+            print(f"[Ear] Wake word only - no command")
 
         # Clean non-ASCII garbage
         ascii_chars = [c for c in text if ord(c) < 128]
@@ -243,10 +238,9 @@ class ContinuousListener:
 
         circular_size = int(self.RATE / self.CHUNK *
                             self.CIRCULAR_BUFFER_SECONDS)
-        circular_buffer = []
+        circular_buffer = deque(maxlen=circular_size)
 
         print("[Ear] Listening... (speak naturally)")
-        print("[Ear] DEBUG: VAD loaded, circular buffer ready")
 
         # After Zara finishes speaking, add a cooldown
         was_talking = False
@@ -269,8 +263,6 @@ class ContinuousListener:
 
                 # Maintain circular buffer
                 circular_buffer.append(data)
-                if len(circular_buffer) > circular_size:
-                    circular_buffer.pop(0)
 
                 pcm = np.frombuffer(data, dtype=np.int16)
                 tensor = torch.from_numpy(pcm.astype(np.float32) / 32768.0)
@@ -304,11 +296,6 @@ class ContinuousListener:
                     threshold = self.VAD_THRESHOLD_NORMAL
                     min_speech_frames = 2
 
-                # DEBUG: Print confidence occasionally
-                if confidence > 0.5:
-                    print(
-                        f"[Ear] DEBUG: High confidence detected: {confidence:.2f}")
-
                 if confidence > threshold:
                     speech_frames += 1
 
@@ -323,8 +310,6 @@ class ContinuousListener:
                                 frames = list(circular_buffer)
                                 if self.ui:
                                     self.ui.set_state("LISTENING")
-                                print(
-                                    f"[Ear] DEBUG: Speech started! Captured {len(circular_buffer)} pre-frames")
 
                             speech_duration += self.CHUNK / self.RATE
                             silence_duration = 0.0
@@ -335,15 +320,12 @@ class ContinuousListener:
                         frames.append(data)
                         silence_duration += self.CHUNK / self.RATE
                         if silence_duration > self.SILENCE_TIMEOUT:
-                            print(
-                                f"[Ear] DEBUG: Silence timeout, processing {len(frames)} frames")
                             break
                     else:
                         vocalizing_accum = 0.0
 
             # Process captured speech
             if not frames or speech_duration < self.MIN_SPEECH_DURATION:
-                print("[Ear] DEBUG: Not enough speech, skipping")
                 continue
 
             # Check audio energy
@@ -355,20 +337,15 @@ class ContinuousListener:
                 continue
 
             # Transcribe
-            print(f"[Ear] DEBUG: Transcribing {len(frames)} frames...")
             text = self._transcribe_memory(frames, pa)
-            print(f"[Ear] DEBUG: Raw transcription: '{text}'")
 
             if not text:
-                print("[Ear] DEBUG: No transcription returned")
                 continue
 
             # Clean and validate
             cleaned = self._clean_transcription(text)
-            print(f"[Ear] DEBUG: Cleaned: '{cleaned}'")
 
             if not cleaned:
-                print("[Ear] DEBUG: Transcription filtered out")
                 continue
 
             print(f"\n🗣️ You: {cleaned}")
@@ -380,8 +357,26 @@ class ContinuousListener:
 
     def _transcribe_memory(self, frames: list, pa: pyaudio.PyAudio) -> str:
         """Transcribe directly from memory."""
+        # 1. Try Deepgram if key is present
+        if DEEPGRAM_API_KEY:
+            try:
+                wav_buffer = io.BytesIO()
+                with wave.open(wav_buffer, 'wb') as wf:
+                    wf.setnchannels(self.CHANNELS)
+                    wf.setsampwidth(pa.get_sample_size(self.FORMAT))
+                    wf.setframerate(self.RATE)
+                    wf.writeframes(b''.join(frames))
+                audio_bytes = wav_buffer.getvalue()
+                
+                import asyncio
+                return asyncio.run(self._transcribe_deepgram_streaming(audio_bytes))
+            except Exception as e:
+                print(f"[Ear] Deepgram error: {e}")
+                # Fallback to Groq
+
+        # 2. Try Groq
         if not GROQ_API_KEY:
-            print("[Ear] GROQ_API_KEY missing")
+            print("[Ear] Transcription keys missing")
             return ""
 
         try:
@@ -407,6 +402,19 @@ class ContinuousListener:
                 return ""
         except Exception as e:
             print(f"[Ear] Transcription error: {e}")
+            return ""
+
+    async def _transcribe_deepgram_streaming(self, audio_bytes: bytes) -> str:
+        """Transcribe using Deepgram Nova-2."""
+        from deepgram import DeepgramClient, PrerecordedOptions
+        try:
+            dg = DeepgramClient(DEEPGRAM_API_KEY)
+            options = PrerecordedOptions(model="nova-2", language="en", smart_format=True)
+            response = await dg.listen.asyncprerecorded.v("1").transcribe_file(
+                {"buffer": audio_bytes, "mimetype": "audio/wav"}, options)
+            return response.results.channels[0].alternatives[0].transcript
+        except Exception as e:
+            print(f"[Ear] Deepgram request failed: {e}")
             return ""
 
 

@@ -10,6 +10,8 @@ from collections import deque
 
 import pyautogui
 from PIL import ImageGrab
+import numpy as np
+import os
 
 
 @dataclass
@@ -48,17 +50,36 @@ class ZaraEyes:
         self.on_text_detected = None
         
     def start(self):
-        """DISABLED - use look_at() on demand instead."""
-        print("[Zara Eyes] On-demand mode - use 'what do you see' to activate")
-        self._running = False  # Don't start continuous loop
+        """Start lightweight proactive mode."""
+        self._running = True
+        self._thread = threading.Thread(target=self._lightweight_watch, daemon=True)
+        self._thread.start()
+        print("[Zara Eyes] Proactive error detection active")
     
     def stop(self):
         """Stop vision monitoring."""
         self._running = False
         print("[Zara Eyes] Vision paused.")
     
+    def _lightweight_watch(self):
+        """Fast loop: only checks for red-pixel errors, no LLM cost."""
+        while self._running:
+            try:
+                screenshot = pyautogui.screenshot()
+                if self._detect_error_fast(screenshot):
+                    # Only call LLM when error is strongly suspected
+                    try:
+                        import win32gui
+                        title = win32gui.GetWindowText(win32gui.GetForegroundWindow())
+                    except:
+                        title = "Unknown"
+                    self._analyze_screen(screenshot, title, focus_on_error=True)
+            except Exception as e:
+                pass
+            time.sleep(self.check_interval)
+
     def _vision_loop(self):
-        """Main vision loop - runs continuously."""
+        """Main vision loop - legacy continuous mode."""
         last_window = ""
         
         while self._running:
@@ -93,34 +114,35 @@ class ZaraEyes:
                 time.sleep(5)
     
     def _detect_error_fast(self, screenshot) -> bool:
-        """Quick error detection without LLM."""
+        """Quick error detection using numpy for vectorized analysis."""
         try:
-            # Sample the center of the screen
-            width, height = screenshot.size
-            region = screenshot.crop((width//4, height//4, width*3//4, height*3//4))
+            w, h = screenshot.size
+            # Sample center region
+            region = screenshot.crop((w//4, h//4, w*3//4, h*3//4))
+            arr = np.array(region)
             
-            # Count red-ish pixels
-            red_count = 0
-            for pixel in region.getdata():
-                r, g, b = pixel[0], pixel[1], pixel[2]
-                if r > 200 and g < 100 and b < 100:
-                    red_count += 1
-                    if red_count > 500:  # Threshold
-                        return True
+            # Red pixels: R > 200, G < 100, B < 100
+            # arr shape is (H, W, 3)
+            red_mask = (arr[:,:,0] > 200) & (arr[:,:,1] < 100) & (arr[:,:,2] < 100)
+            
+            # If more than 500 red pixels, suspect an error
+            return int(red_mask.sum()) > 500
         except:
-            pass
-        return False
+            return False
     
     def _analyze_screen(self, screenshot, window_title: str, focus_on_error: bool = False):
         """Use vision model to deeply analyze the screen."""
         try:
             import ollama
-            import os
             
-            # Save screenshot for debugging
-            debug_path = os.path.join(os.path.dirname(__file__), "last_screenshot.png")
-            screenshot.save(debug_path)
-            print(f"[Zara Eyes] Screenshot saved to {debug_path}")
+            DEBUG_VISION = os.environ.get("ZARA_DEBUG_VISION", "0") == "1"
+            if DEBUG_VISION:
+                debug_path = os.path.join(os.path.dirname(__file__), "last_screenshot.png")
+                screenshot.save(debug_path)
+                print(f"[Zara Eyes] Debug screenshot saved to {debug_path}")
+            
+            # Fallback OCR check
+            ocr_text = self._read_text_ocr(screenshot)
             
             # Convert screenshot to base64
             import io
@@ -192,8 +214,8 @@ class ZaraEyes:
             self.current_context = ScreenContext(
                 timestamp=time.time(),
                 active_window=window_title,
-                text_on_screen="",
-                has_error="error" in description.lower(),
+                text_on_screen=ocr_text,
+                has_error="error" in description.lower() or "error" in ocr_text.lower(),
                 error_message=description if "error" in description.lower() else None,
                 raw_description=description
             )
@@ -208,6 +230,15 @@ class ZaraEyes:
             print(f"[Zara Eyes] Vision analysis failed: {e}")
             import traceback
             traceback.print_exc()
+
+    def _read_text_ocr(self, screenshot) -> str:
+        """Free offline fallback using pytesseract."""
+        try:
+            import pytesseract
+            # Perform OCR on a slightly downscaled image for speed if needed
+            return pytesseract.image_to_string(screenshot, config="--psm 11")[:500]
+        except:
+            return ""
     
     def look_at(self) -> Optional[ScreenContext]:
         """Take a single screenshot and analyze it."""
@@ -219,23 +250,9 @@ class ZaraEyes:
             except:
                 window_title = "Unknown"
             
-            # Use a FASTER model or skip if too slow
-            print("[Zara Eyes] Capturing screen...")
-            
-            # For now, return basic info without LLM (much faster)
-            screen_w, screen_h = pyautogui.size()
-            mouse_x, mouse_y = pyautogui.position()
-            
-            context = ScreenContext(
-                timestamp=time.time(),
-                active_window=window_title,
-                text_on_screen="",
-                has_error=False,
-                raw_description=f"I see the {window_title} window on a {screen_w}x{screen_h} screen. Your mouse is at ({mouse_x}, {mouse_y})."
-            )
-            
-            self.current_context = context
-            return context
+            # Try actual vision analysis with a short timeout
+            self._analyze_screen(screenshot, window_title)
+            return self.current_context
             
         except Exception as e:
             print(f"[Zara Eyes] Error: {e}")

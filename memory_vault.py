@@ -18,6 +18,9 @@ from typing import List, Optional
 _CHROMA_CLIENT = None
 _CHROMA_COLLECTION = None
 
+_db_integrity_checked = False
+MAX_MEMORIES = 10000
+
 
 # Force-alias at the top to prevent import race conditions
 def add_memory(text: str): return store_memory(text)
@@ -142,20 +145,42 @@ def _extract_keywords(text: str, max_n: int = MAX_KEYWORDS) -> List[str]:
 
 
 def _connect() -> sqlite3.Connection:
+    global _db_integrity_checked
     try:
         conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
-        # Test connection with a quick PRAGMA check
-        conn.execute("PRAGMA integrity_check(1)")
+        
+        if not _db_integrity_checked:
+            # Test connection with a quick PRAGMA check once per session
+            conn.execute("PRAGMA integrity_check(1)")
+            _db_integrity_checked = True
+            
         return conn
     except sqlite3.DatabaseError as e:
         if "malformed" in str(e).lower():
             print(f"[Memory Vault] Database at {DB_PATH} is malformed. Attempting reset.")
-            if os.path.exists(DB_PATH):
-                os.rename(DB_PATH, DB_PATH + ".corrupted")
-            # Recursive call will now create a fresh DB
+            _handle_corrupt_db()
             return _connect()
         raise e
+
+def _handle_corrupt_db(depth: int = 0) -> None:
+    """Safely handle DB corruption with recursion guard."""
+    if depth > 2:
+        print("[Memory Vault] FATAL: Cannot recreate DB after 3 attempts. Manual intervention required.")
+        return
+        
+    if os.path.exists(DB_PATH):
+        try:
+            timestamp = int(time.time())
+            os.rename(DB_PATH, f"{DB_PATH}.corrupted_{timestamp}")
+        except Exception as e:
+            print(f"[Memory Vault] Rename failed: {e}")
+
+    try:
+        init_db()
+    except Exception as e:
+        print(f"[Memory Vault] Recreate failed (attempt {depth+1}): {e}")
+        _handle_corrupt_db(depth + 1)
 
 
 def init_db() -> None:
@@ -205,13 +230,28 @@ def init_db() -> None:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_memories_tags ON memories(keyword_tags)"
             )
+            
+            # Run identity migration for legacy memories
+            _migrate_friday_prefix(conn)
+            
             conn.commit()
     except Exception as e:
         print(f"[Memory Vault] Initialization error: {e}")
         if "malformed" in str(e).lower() and os.path.exists(DB_PATH):
             print("[Memory Vault] Attempting emergency DB recreate...")
-            os.rename(DB_PATH, DB_PATH + ".emergency_bak")
-            init_db()
+            _handle_corrupt_db()
+
+def _migrate_friday_prefix(conn: sqlite3.Connection):
+    """One-time migration: Friday -> Zara prefixes."""
+    try:
+        conn.execute("""
+            UPDATE memories 
+            SET memory_text = REPLACE(memory_text, 'Friday: ', 'Zara: ')
+            WHERE memory_text LIKE 'Friday: %'
+        """)
+        print("[Memory Vault] Migrated legacy identity prefixes.")
+    except Exception as e:
+        print(f"[Memory Vault] Migration failed: {e}")
 
 
 def store_memory(text: str) -> bool:
@@ -233,11 +273,29 @@ def store_memory(text: str) -> bool:
                 "INSERT INTO memories (timestamp, keyword_tags, memory_text) VALUES (?, ?, ?)",
                 (timestamp, tags, text.strip()),
             )
+            # Prune old memories to maintain performance
+            _prune_old_memories(conn)
             conn.commit()
         return True
     except sqlite3.Error as e:
         print(f"[Zara Vault] store_memory failed: {e}")
         return False
+
+def _prune_old_memories(conn: sqlite3.Connection) -> None:
+    """Ensure the memories table stays within MAX_MEMORIES limit."""
+    try:
+        # Get current count
+        count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        if count > MAX_MEMORIES:
+            # Delete everything except the most recent entries
+            conn.execute(f"""
+                DELETE FROM memories WHERE id NOT IN (
+                    SELECT id FROM memories ORDER BY id DESC LIMIT {MAX_MEMORIES}
+                )
+            """)
+            print(f"[Memory Vault] Pruned {count - MAX_MEMORIES} old memories.")
+    except Exception as e:
+        print(f"[Memory Vault] Pruning failed: {e}")
 
 
 def get_recent_memories(limit: int = 10) -> List[str]:
