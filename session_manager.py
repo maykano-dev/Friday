@@ -52,12 +52,16 @@ class SessionManager:
 
     SESSION_FILE = os.path.join(
         os.path.dirname(__file__), "session_state.json")
+    DEBOUNCE_SECONDS = 5.0  # Minimum interval between disk writes
 
     def __init__(self):
         self.conversation_history: List[Dict[str, str]] = []
         self.pending_tasks: List[PendingTask] = []
         self.active_context: Dict[str, Any] = {}
         self.last_active_time: float = time.time()
+        self._last_save_time: float = 0.0
+        self._save_timer: Optional[threading.Timer] = None
+        self._save_lock = threading.Lock()
         self._load_session()
 
     def _load_session(self) -> None:
@@ -84,7 +88,30 @@ class SessionManager:
             print(f"[Session] Failed to load session: {e}")
 
     def save_session(self) -> None:
-        """Persist current state to disk."""
+        """Persist current state to disk (debounced to avoid excessive writes)."""
+        with self._save_lock:
+            # Cancel any pending timer
+            if self._save_timer is not None:
+                self._save_timer.cancel()
+                self._save_timer = None
+
+            now = time.time()
+            time_since_last = now - self._last_save_time
+
+            if time_since_last >= self.DEBOUNCE_SECONDS:
+                # Enough time has elapsed — write immediately
+                self._do_save()
+            else:
+                # Schedule a write for when the debounce window expires
+                delay = self.DEBOUNCE_SECONDS - time_since_last
+                self._save_timer = threading.Timer(delay, self._do_save)
+                self._save_timer.daemon = True
+                self._save_timer.start()
+
+    def _do_save(self) -> None:
+        """Actual disk write. Called by save_session() after debounce."""
+        with self._save_lock:
+            self._save_timer = None
         try:
             data = {
                 "conversation_history": self.conversation_history,
@@ -95,6 +122,7 @@ class SessionManager:
             }
             with open(self.SESSION_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, indent=2)
+            self._last_save_time = time.time()
         except Exception as e:
             print(f"[Session] Failed to save session: {e}")
 

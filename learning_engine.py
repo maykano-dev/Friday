@@ -15,7 +15,9 @@ from ui_engine import NeuralVisualizer
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODEL_NAME = "qwen2.5:1.5b"
-POLL_INTERVAL = 10  # Seconds to wait between DB checks
+POLL_INTERVAL = 10  # Base seconds to wait between DB checks
+MAX_POLL_INTERVAL = 120  # Cap backoff at 2 minutes
+BACKOFF_FACTOR = 2.0   # Double each idle cycle
 
 
 class LearningEngine(threading.Thread):
@@ -24,6 +26,7 @@ class LearningEngine(threading.Thread):
         self.ui = ui
         self.poll_interval = poll_interval
         self._running = False
+        self._current_interval = poll_interval  # tracks backoff state
 
     def start(self) -> None:
         self._running = True
@@ -34,7 +37,7 @@ class LearningEngine(threading.Thread):
 
     def run(self) -> None:
         while self._running:
-            time.sleep(self.poll_interval)
+            time.sleep(self._current_interval)
 
             if not self._running:
                 break
@@ -42,10 +45,18 @@ class LearningEngine(threading.Thread):
             if self.ui.state == "STANDBY":
                 tasks = memory_vault.get_unprocessed_failed_tasks()
                 if not tasks:
+                    # Backoff: nothing to do, sleep longer next cycle
+                    self._current_interval = min(
+                        self._current_interval * BACKOFF_FACTOR, MAX_POLL_INTERVAL)
                     continue
 
                 if not self._check_ollama_health():
+                    # Don't backoff on health failures — retry at normal interval
+                    self._current_interval = self.poll_interval
                     continue
+
+                # Work to do — reset backoff
+                self._current_interval = self.poll_interval
 
                 # Take the oldest un-summarized failed task
                 task = tasks[0]
@@ -61,6 +72,9 @@ class LearningEngine(threading.Thread):
                     memory_vault.mark_task_processed(task_id, summary)
                     print(
                         f"[Learning Engine] Task {task_id} summarized and committed to vault.")
+            else:
+                # Not in standby, reset backoff so we're ready when idle
+                self._current_interval = self.poll_interval
 
     def _check_ollama_health(self) -> bool:
         """Verify Ollama is reachable before attempting heavy synthesis."""

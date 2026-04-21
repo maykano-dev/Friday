@@ -102,28 +102,41 @@ class ContinuousListener:
         self._running = False
 
     def _calibrate_microphone(self, pa, stream) -> None:
-        """Calibrate VAD threshold based on room noise."""
+        """Calibrate VAD threshold and bg_speaker_detector based on room noise."""
         print("[Ear] Calibrating microphone... (stay silent)")
 
         noise_levels = []
+        calibration_frames = []
         for _ in range(40):  # 4 seconds
             try:
                 data = stream.read(self.CHUNK, exception_on_overflow=False)
                 pcm = np.frombuffer(data, dtype=np.int16)
                 noise_levels.append(np.abs(pcm).mean())
+                calibration_frames.append(data)
             except Exception:
                 pass
             time.sleep(0.1)
 
         if noise_levels:
             avg_noise = np.mean(noise_levels)
-            # Set thresholds based on noise floor
+            # Set VAD thresholds based on noise floor
             self.VAD_THRESHOLD_NORMAL = max(
                 0.75, min(0.88, 0.78 + avg_noise / 8000))
             self.VAD_THRESHOLD_TALKING = max(
                 0.55, self.VAD_THRESHOLD_NORMAL - 0.12)
             print(
                 f"[Ear] Calibrated - Noise: {avg_noise:.1f}, Normal: {self.VAD_THRESHOLD_NORMAL:.2f}, Talking: {self.VAD_THRESHOLD_TALKING:.2f}")
+
+            # Calibrate background speaker detector with same data
+            try:
+                from bg_speaker_detector import get_bg_detector
+                bg_det = get_bg_detector()
+                if calibration_frames:
+                    all_samples = np.frombuffer(b''.join(calibration_frames), dtype=np.int16).astype(np.float32)
+                    rms_energy = float(np.sqrt(np.mean(all_samples ** 2)))
+                    bg_det.calibrate(rms_energy)
+            except Exception as e:
+                print(f"[Ear] BG detector calibration skipped: {e}")
 
     def _clean_transcription(self, text: str) -> str | None:
         """Clean and validate transcribed text."""
@@ -351,7 +364,24 @@ class ContinuousListener:
             if not cleaned:
                 continue
 
-            print(f"\n🗣️ You: {cleaned}")
+            # Background speaker filter — discard if not directed at Zara
+            try:
+                from bg_speaker_detector import get_bg_detector, SpeakerContext
+                bg_det = get_bg_detector()
+                media_is_playing = getattr(state.media_playing, 'value', False)
+                classification, confidence = bg_det.classify_audio(
+                    frames,
+                    sample_rate=self.RATE,
+                    transcription=cleaned,
+                    media_playing=media_is_playing,
+                )
+                if classification == SpeakerContext.BACKGROUND and confidence > 0.75:
+                    print(f"[Ear] Background speech filtered (conf={confidence:.2f}): '{cleaned[:40]}'")
+                    continue
+            except Exception as e:
+                print(f"[Ear] BG detector error (passing through): {e}")
+
+            print(f"\n\U0001f5e3\ufe0f You: {cleaned}")
             self.result_queue.put(cleaned)
 
         stream.stop_stream()

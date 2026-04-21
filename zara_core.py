@@ -43,24 +43,32 @@ REQUEST_TIMEOUT = 30  # Groq is fast — 30s is generous
 MAX_TURNS = 6
 MAX_MESSAGES = MAX_TURNS * 2
 
-SYSTEM_PROMPT = (
-    "You are Zara, an advanced AI assistant and autonomous agent built at zara.ai. "
-    "The user is SPEAKING to you. You are sharp, warm, efficient, and always one step ahead. "
-    "You address male users as 'Sir' and female users as 'Ma'am', and adapt to each user naturally. "
-    "You never say 'I cannot do that' — you find a way or offer the closest alternative. "
-    "You never ask unnecessary questions. You manage multiple tasks simultaneously.\n\n"
-    "CRITICAL RULES:\n"
-    "1. Keep responses CONCISE - 1 to 3 short sentences maximum.\n"
-    "2. DO NOT output <EXECUTE> blocks for simple actions like opening apps, playing music, "
-    "creating folders, writing files, or searching the web. Just respond naturally—the system executes automatically.\n"
-    "3. ONLY use <EXECUTE> for complex multi-step tasks like 'browse_web', 'fill_form', 'web_research', "
-    "or 'verified_execute' (coding tasks).\n"
-    "4. If the user's input is unclear, say 'I didn't catch that. Could you repeat it?' and STOP.\n"
-    "5. NEVER mention typing, keyboards, or screens.\n\n"
-    "You have access to tools: weather, jokes, news, crypto, web search, file creation, app launching, "
-    "web browsing, form filling, and more.\n"
-    "Be warm but BRIEF. One to three sentences is perfect."
-)
+def get_dynamic_system_prompt() -> str:
+    """Build system prompt with correct honorific for detected gender."""
+    try:
+        from gender_detector import get_honorific
+        honorific = get_honorific()
+    except Exception:
+        honorific = "Sir"
+    
+    return (
+        f"You are Zara, an advanced AI assistant and autonomous agent built at zara.ai. "
+        f"The user is SPEAKING to you. You are sharp, warm, efficient, and always one step ahead. "
+        f"Address this user as '{honorific}'. "
+        f"You never say 'I cannot do that' — you find a way or offer the closest alternative. "
+        f"You never ask unnecessary questions. You manage multiple tasks simultaneously.\n\n"
+        f"CRITICAL RULES:\n"
+        f"1. Keep responses CONCISE - 1 to 3 short sentences maximum.\n"
+        f"2. DO NOT output <EXECUTE> blocks for simple actions like opening apps, playing music, "
+        f"creating folders, writing files, or searching the web.\n"
+        f"3. ONLY use <EXECUTE> for complex multi-step tasks like browse_web, fill_form, web_research, "
+        f"or verified_execute.\n"
+        f"4. If input is unclear, say 'I didn't catch that. Could you repeat it?' and STOP.\n"
+        f"5. NEVER mention typing, keyboards, or screens.\n\n"
+        f"Be warm but BRIEF. One to three sentences is perfect."
+    )
+
+SYSTEM_PROMPT = ""  # Deprecated, use get_dynamic_system_prompt()
 
 ACTION_PROTOCOL_PROMPT = (
     "🎯 ZARA CAPABILITIES MANIFEST 🎯\n"
@@ -339,7 +347,7 @@ def _build_messages(
     notes right after the main system prompt so the model treats them as
     authoritative context rather than part of the ongoing dialog.
     """
-    sys_text = SYSTEM_PROMPT
+    sys_text = get_dynamic_system_prompt()
     try:
         insight = memory_vault.get_latest_context_insight()
         if insight:
@@ -471,593 +479,22 @@ def _generate_response_impl(user_text: str) -> str:
 
 
 def _call_groq_streaming(user_text: str) -> str:
-    # ── 4. Main LLM Path (Streaming) ──
-    # ... (Actual LLM streaming implementation would go here)
-    return "Streaming response placeholder."
-
-
-    def _handle_play_music(text: str) -> Optional[str]:
-        """Parse natural language to play music on Spotify."""
-        import json
-        import action_engine
-
-        text_lower = text.lower()
-        app = "spotify"
-        query = text_lower
-
-        command_patterns = [
-            r'\bplay\b', r'\bput on\b', r'\blisten to\b',
-            r'\bi want to hear\b', r'\bcan you play\b',
-            r'\bsome\b(?=\s+music\b)', r'\bon spotify\b',
-            r'\bon youtube\b', r'\bon apple music\b',
-        ]
-        for pattern in command_patterns:
-            query = re.sub(pattern, '', query, flags=re.IGNORECASE)
-        query = re.sub(r'\s+', ' ', query).strip().strip(',').strip()
-
-        # Try to parse "Song by Artist"
-        song_name = ""
-        artist_name = ""
-
-        if " by " in query:
-            parts = query.split(" by ", 1)
-            song_name = parts[0].strip()
-            artist_name = parts[1].strip()
-        elif " from " in query:
-            parts = query.split(" from ", 1)
-            song_name = parts[0].strip()
-            artist_name = parts[1].strip()
-
-        # Pattern 4: "some music" or "music"
-        if not query or query in ["music", "some music", "something"]:
-            # Play user's recent favorites or discover weekly
-            query = ""  # Empty = play whatever's recommended
-            print("[Zara] Playing recommended music")
-
-        # ── CLEAN QUERY ──────────────────────────────────────────
-        if query:
-            # Fix common misspellings
-            corrections = {
-                "stoneboy": "Stonebwoy",
-                "chris brown": "Chris Brown",
-                "burna": "Burna Boy",
-            }
-            for wrong, correct in corrections.items():
-                if wrong in query.lower():
-                    query = re.sub(wrong, correct, query, flags=re.IGNORECASE)
-
-        print(f"[Zara] Final query: '{query}'")
-
-        # ── REMEMBER FOR FUTURE ──────────────────────────────────
-        # Only log meaningful entries
-        if song_name and len(song_name) > 2 and song_name not in ["music", "song", "some music"]:
-            prefs.add_recent_song(song_name, artist_name)
-        elif artist_name and len(artist_name) > 2:
-            prefs.add_recent_song("", artist_name)
-        elif query and len(query) > 2 and query not in ["music", "song", "some music"]:
-            # If we only have a cleaned query string
-            prefs.add_recent_song(query, "")
-
-        # ── EXECUTE ──────────────────────────────────────────────
-        try:
-            executor = action_engine.ActionExecutor()
-            payload = json.dumps({
-                "action": "start_app",
-                "app_name": app,
-                "query": query,
-                "music_action": "play_artist" if query else "play_recommended"
-            })
-            executor.execute_payload(payload)
-
-            # Return appropriate response
-            if song_name and artist_name:
-                return f"Playing {song_name} by {artist_name}, Sir."
-            elif query:
-                return f"Playing {query}, Sir."
-            else:
-                return "Playing music, Sir."
-
-        except Exception as e:
-            print(f"[Zara] Handler exception: {e}")
-            import traceback
-            traceback.print_exc()
-            return f"I had trouble playing music, Sir."
-
-    def _handle_vision_command(text: str) -> Optional[str]:
-        """Handle vision-related commands."""
-        from zara_eyes import get_eyes
-        import local_voice
-        
-        eyes = get_eyes()
-        text_lower = text.lower()
-        
-        if "what do you see" in text_lower or "what's on my screen" in text_lower:
-            print("[Zara] Forcing fresh screen analysis...")
-            
-            # Force a fresh look
-            context = eyes.look_at()
-            
-            if context and context.raw_description:
-                response = f"I see {context.active_window}. {context.raw_description}"
-                print(f"[Zara] Vision response: {response}")
-                
-                # SPEAK IT IMMEDIATELY
-                import threading
-                def speak_it():
-                    local_voice.speak(response)
-                threading.Thread(target=speak_it, daemon=True).start()
-                
-                return response
-            else:
-                # Fallback
-                try:
-                    import pyautogui
-                    import win32gui
-                    window_title = win32gui.GetWindowText(win32gui.GetForegroundWindow())
-                    response = f"I see the {window_title} window on your screen, Sir."
-                    local_voice.speak(response)
-                    return response
-                except:
-                    response = "I'm looking at your screen, Sir. Everything appears normal."
-                    local_voice.speak(response)
-                    return response
-        
-        elif "what window" in text_lower or "what app" in text_lower:
-            window = eyes.get_active_window()
-            response = f"You're currently in {window}, Sir."
-            import threading
-            threading.Thread(target=lambda: local_voice.speak(response), daemon=True).start()
-            return response
-
-        elif "navigate to" in text_lower or "go to" in text_lower:
-            import re
-            import zara_vision
-            vision = zara_vision.get_vision()
-            match = re.search(r'(?:navigate to|go to)\s+(.+)', text_lower)
-            if match:
-                destination = match.group(1).strip()
-                if vision.navigate_to(destination):
-                    return f"Navigated to {destination}, Sir."
-                else:
-                    return f"I couldn't navigate to {destination}."
-
-        # ── QUESTION ANSWERING ────────────────────────────
-        elif any(word in text_lower for word in ["what color", "how many", "where is", "which button"]):
-            import zara_vision
-            vision = zara_vision.get_vision()
-            return vision.answer_question(text)
-
-        # ── UI ANALYSIS ───────────────────────────────────
-        elif "analyze the screen" in text_lower or "what can i do here" in text_lower:
-            import zara_vision
-            vision = zara_vision.get_vision()
-            result = vision.analyze_ui()
-            response = f"{result.description}\n\n"
-            if result.suggested_actions:
-                response += "Suggested actions:\n• " + \
-                    "\n• ".join(result.suggested_actions[:5])
-            return response
-        # ── WAIT FOR SOMETHING ───────────────────────────
-        elif "tell me when" in text_lower or "let me know when" in text_lower:
-            import re
-            import zara_vision
-            vision = zara_vision.get_vision()
-            match = re.search(
-                r'(?:tell me when|let me know when)\s+(.+)', text_lower)
-            if match:
-                element = match.group(1).strip().replace(
-                    " appears", "").replace(" shows up", "")
-
-                def monitor_and_notify():
-                    if vision.wait_for_element(element, timeout=60):
-                        import local_voice
-                        local_voice.speak(
-                            f"Sir, {element} has appeared on the screen.")
-                    else:
-                        import local_voice
-                        local_voice.speak(
-                            f"Sir, {element} did not appear within the time limit.")
-
-                import threading
-                threading.Thread(target=monitor_and_notify,
-                                 daemon=True).start()
-                return f"I'm keeping an eye out for {element}, Sir."
-
-        return "I'm looking, Sir."
-
-    def _handle_window_command(text: str) -> Optional[str]:
-        """Handle window management commands."""
-        from zara_window_manager import get_window_manager
-        
-        wm = get_window_manager()
-        text_lower = text.lower()
-        
-        # ── FOCUS / SWITCH ──────────────────────────────────────
-        if "switch to" in text_lower or "focus" in text_lower or "go to" in text_lower:
-            import re
-            match = re.search(r'(?:switch to|focus|go to)\s+(.+)', text_lower)
-            if match:
-                app = match.group(1).strip()
-                if wm.focus_window(title_contains=app) or wm.focus_window(process_contains=app):
-                    return f"Switched to {app}, Sir."
-                return f"I couldn't find {app}, Sir."
-        
-        # ── MINIMIZE ────────────────────────────────────────────
-        elif "minimize" in text_lower:
-            if "all" in text_lower or "everything" in text_lower:
-                wm.minimize_all()
-                return "All windows minimized, Sir."
-            else:
-                import re
-                match = re.search(r'minimize\s+(.+)', text_lower)
-                if match:
-                    app = match.group(1).strip()
-                    if wm.minimize_window(title_contains=app):
-                        return f"Minimized {app}, Sir."
-                else:
-                    # Minimize current window
-                    wm.minimize_window()
-                    return "Window minimized, Sir."
-        
-        # ── MAXIMIZE ────────────────────────────────────────────
-        elif "maximize" in text_lower:
-            import re
-            match = re.search(r'maximize\s+(.+)', text_lower)
-            if match:
-                app = match.group(1).strip()
-                if wm.maximize_window(title_contains=app):
-                    return f"Maximized {app}, Sir."
-            else:
-                wm.maximize_window()
-                return "Window maximized, Sir."
-        
-        # ── CLOSE ───────────────────────────────────────────────
-        elif "close" in text_lower and "window" in text_lower:
-            import re
-            match = re.search(r'close\s+(.+?)(?:\s+window|\s*$)', text_lower)
-            if match:
-                app = match.group(1).strip()
-                if wm.close_window(title_contains=app):
-                    return f"Closed {app}, Sir."
-            else:
-                wm.close_window()
-                return "Window closed, Sir."
-        
-        # ── SNAP ────────────────────────────────────────────────
-        elif "snap" in text_lower:
-            if "left" in text_lower:
-                wm.snap_left()
-                return "Window snapped to left, Sir."
-            elif "right" in text_lower:
-                wm.snap_right()
-                return "Window snapped to right, Sir."
-            elif "top" in text_lower or "maximize" in text_lower:
-                wm.snap_top()
-                return "Window maximized, Sir."
-        
-        # ── ARRANGE ─────────────────────────────────────────────
-        elif "arrange" in text_lower or "tile" in text_lower:
-            if "side by side" in text_lower:
-                # Try to arrange current and previous window
-                return "Which two windows would you like to arrange, Sir?"
-            elif "grid" in text_lower:
-                return "Tell me which windows to arrange, Sir."
-        
-        # ── MOVE ────────────────────────────────────────────────
-        elif "move" in text_lower and "window" in text_lower:
-            import re
-            import pyautogui
-            # Move to specific position: "move window to top left"
-            if "top" in text_lower and "left" in text_lower:
-                wm.move_window(None, 0, 0)
-                return "Window moved to top left, Sir."
-            elif "top" in text_lower and "right" in text_lower:
-                screen_width = pyautogui.size()[0]
-                wm.move_window(None, screen_width // 2, 0)
-                return "Window moved to top right, Sir."
-            elif "center" in text_lower:
-                screen_width = pyautogui.size()[0]
-                screen_height = pyautogui.size()[1]
-                wm.move_window(None, screen_width // 4, screen_height // 4)
-                return "Window centered, Sir."
-        
-        # ── LIST WINDOWS ────────────────────────────────────────
-        elif "what windows" in text_lower or "list windows" in text_lower or "open windows" in text_lower:
-            return wm.list_windows()
-        
-        # ── SHOW DESKTOP ────────────────────────────────────────
-        elif "show desktop" in text_lower:
-            wm.minimize_all()
-            return "Desktop shown, Sir."
-        
-        elif "restore windows" in text_lower or "show windows" in text_lower:
-            wm.restore_all()
-            return "Windows restored, Sir."
-        
-        return None
-
-    # Check if this should use free web tools first
-    # Order: Specific phrases first to avoid shadowing (Issue A)
-    web_tool_keywords = [
-        # Vision Commands
-        ("what do you see", lambda txt: _handle_vision_command(txt)),
-        ("what's on my screen", lambda txt: _handle_vision_command(txt)),
-        ("is there an error", lambda txt: _handle_vision_command(txt)),
-        ("analyze the screen", lambda txt: _handle_vision_command(txt)),
-        ("analyze this", lambda txt: _handle_vision_command(txt)),
-        ("look at", lambda txt: _handle_vision_command(txt)),
-        ("read this", lambda txt: _handle_vision_command(txt)),
-        ("read the", lambda txt: _handle_vision_command(txt)),
-        ("what window", lambda txt: _handle_vision_command(txt)),
-
-        # Web Interaction (Specific first)
-        ("search the web", lambda txt: _handle_web_search_direct(txt)),
-        ("look up on google", lambda txt: _handle_web_search_direct(txt)),
-        ("search for", lambda txt: _handle_web_search_direct(txt)),
-        ("google", lambda txt: _handle_web_search_direct(txt)),
-        ("open website", lambda txt: _handle_browse_website(txt)),
-        ("navigate to", lambda txt: _handle_browse_website(txt)),
-        ("go to", lambda txt: _handle_browse_website(txt)),
-        ("visit", lambda txt: _handle_browse_website(txt)),
-        ("browse", lambda txt: _handle_browse_website(txt)),
-        ("submit form", lambda txt: _handle_fill_form(txt)),
-        ("fill form", lambda txt: _handle_fill_form(txt)),
-
-        # Space & Science
-        ("astronomy picture", lambda txt: _handle_nasa_apod()),
-        ("nasa picture", lambda txt: _handle_nasa_apod()),
-        ("space picture", lambda txt: _handle_nasa_apod()),
-        ("nasa", lambda txt: _handle_nasa_apod()),
-        ("rocket launch", lambda txt: _handle_spacex_launch()),
-        ("next launch", lambda txt: _handle_spacex_launch()),
-        ("spacex", lambda txt: _handle_spacex_launch()),
-        ("space station", lambda txt: _handle_iss_location()),
-        ("iss", lambda txt: _handle_iss_location()),
-        ("astronomy", lambda txt: _handle_astronomy(txt)),
-        ("sunrise", lambda txt: _handle_astronomy(txt)),
-        ("sunset", lambda txt: _handle_astronomy(txt)),
-        ("moon", lambda txt: _handle_astronomy(txt)),
-
-        # Knowledge & Research
-        ("meaning of", lambda txt: _handle_definition(txt)),
-        ("what does", lambda txt: _handle_definition(txt) if "mean" in txt else None),
-        ("definition", lambda txt: _handle_definition(txt)),
-        ("define", lambda txt: _handle_definition(txt)),
-        ("synonym", lambda txt: _handle_synonyms(txt)),
-        ("rhyme", lambda txt: _handle_rhymes(txt)),
-        ("weather", lambda txt: _handle_weather(txt)),
-        ("temperature", lambda txt: _handle_weather(txt)),
-        ("forecast", lambda txt: _handle_weather(txt)),
-        ("tell me about", lambda txt: _handle_search(txt)),
-        ("information on", lambda txt: _handle_search(txt)),
-        ("search", lambda txt: _handle_search(txt)),
-        ("find", lambda txt: _handle_search(txt)),
-        ("look up", lambda txt: _handle_search(txt)),
-        ("what is", lambda txt: _handle_search(txt)),
-        ("who is", lambda txt: _handle_search(txt)),
-
-        # Entertainment
-        ("make me laugh", lambda txt: _handle_joke()),
-        ("joke", lambda txt: _handle_joke()),
-        ("funny", lambda txt: _handle_joke()),
-        ("inspiration", lambda txt: _handle_quote()),
-        ("motivation", lambda txt: _handle_quote()),
-        ("quote", lambda txt: _handle_quote()),
-        ("cat fact", lambda txt: _handle_cat_fact()),
-        ("dog fact", lambda txt: _handle_dog_fact()),
-        ("fact", lambda txt: _handle_useless_fact()),
-        ("what should i do", lambda txt: _handle_bored_activity()),
-        ("bored", lambda txt: _handle_bored_activity()),
-        ("help me", lambda txt: _handle_advice()),
-        ("advice", lambda txt: _handle_advice()),
-
-        # Crypto & Finance
-        ("exchange rate", lambda txt: _handle_exchange_rate(txt)),
-        ("price of", lambda txt: _handle_crypto(txt) if any(c in txt for c in ["bitcoin", "ethereum", "doge", "crypto"]) else None),
-        ("bitcoin", lambda txt: _handle_crypto("bitcoin")),
-        ("btc", lambda txt: _handle_crypto("bitcoin")),
-        ("ethereum", lambda txt: _handle_crypto("ethereum")),
-        ("eth", lambda txt: _handle_crypto("ethereum")),
-        ("dogecoin", lambda txt: _handle_crypto("dogecoin")),
-        ("doge", lambda txt: _handle_crypto("dogecoin")),
-        ("crypto", lambda txt: _handle_crypto(txt)),
-        ("convert", lambda txt: _handle_exchange_rate(txt)),
-        ("usd to", lambda txt: _handle_exchange_rate(txt)),
-
-        # News & Tech
-        ("hacker news", lambda txt: _handle_hacker_news()),
-        ("hn", lambda txt: _handle_hacker_news()),
-        ("dev.to", lambda txt: _handle_dev_to()),
-        ("github", lambda txt: _handle_github(txt)),
-        ("npm", lambda txt: _handle_npm(txt)),
-        ("pypi", lambda txt: _handle_pypi(txt)),
-        ("pip package", lambda txt: _handle_pypi(txt)),
-        # System & Memory
-        ("calculate", lambda txt: _handle_calculator(txt)),
-        ("what is", lambda txt: _handle_calculator(txt) if any(c in txt for c in ["+", "-", "*", "/"]) else _handle_search(txt)),
-        ("system status", lambda txt: _handle_system_status(txt)),
-        ("cpu usage", lambda txt: _handle_system_status(txt)),
-        ("ram usage", lambda txt: _handle_system_status(txt)),
-        ("memory usage", lambda txt: _handle_system_status(txt)),
-        ("remind me", lambda txt: _handle_reminder(txt)),
-
-        # Utility
-        ("what's my ip", lambda txt: _handle_ip_info(txt)),
-        ("ip address", lambda txt: _handle_ip_info(txt)),
-        ("my ip", lambda txt: _handle_ip_info(txt)),
-        ("validate email", lambda txt: _handle_email_validation(txt)),
-        ("check email", lambda txt: _handle_email_validation(txt)),
-        ("shorten", lambda txt: _handle_shorten_url(txt)),
-        ("qr code", lambda txt: _handle_qr_code(txt)),
-        ("time in", lambda txt: _handle_timezone(txt)),
-        ("what time", lambda txt: _handle_timezone(txt)),
-        ("timezone", lambda txt: _handle_timezone(txt)),
-        ("public holiday", lambda txt: _handle_holidays(txt)),
-        ("holiday", lambda txt: _handle_holidays(txt)),
-        ("what can you do", lambda txt: _handle_what_can_you_do()),
-        ("capabilities", lambda txt: _handle_what_can_you_do()),
-        ("skills", lambda txt: _handle_what_can_you_do()),
-        ("what do you know", lambda txt: _handle_what_can_you_do()),
-        ("help me understand", lambda txt: _handle_what_can_you_do()),
-
-        # Media Search
-        ("movie", lambda txt: _handle_movie_info(txt)),
-        ("film", lambda txt: _handle_movie_info(txt)),
-        ("book", lambda txt: _handle_book_info(txt)),
-        ("novel", lambda txt: _handle_book_info(txt)),
-        ("pokemon", lambda txt: _handle_pokemon(txt)),
-        ("pokémon", lambda txt: _handle_pokemon(txt)),
-
-        # Food & Recipes
-        ("how do i make", lambda txt: _handle_recipe(txt)),
-        ("how to make", lambda txt: _handle_recipe(txt)),
-        ("how to cook", lambda txt: _handle_recipe(txt)),
-        ("how to bake", lambda txt: _handle_recipe(txt)),
-        ("recipe", lambda txt: _handle_recipe(txt)),
-        ("cook", lambda txt: _handle_recipe(txt)),
-
-        # Music & Media
-        ("pause music", lambda txt: _handle_play_music(txt)),
-        ("pause song", lambda txt: _handle_play_music(txt)),
-        ("next track", lambda txt: _handle_play_music(txt)),
-        ("next song", lambda txt: _handle_play_music(txt)),
-        ("skip this", lambda txt: _handle_play_music(txt)),
-        ("previous song", lambda txt: _handle_play_music(txt)),
-        ("play music", lambda txt: _handle_play_music(txt)),
-        ("play song", lambda txt: _handle_play_music(txt)),
-        ("play some", lambda txt: _handle_play_music(txt)),
-        ("put on", lambda txt: _handle_play_music(txt)),
-        ("listen to", lambda txt: _handle_play_music(txt)),
-        ("spotify", lambda txt: _handle_play_music(txt) if "play" in txt.lower() else None),
-        
-        # Contextual music guards
-        ("play", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["music", "song", "spotify", "artist", "album", "track", "by "]) else None),
-        ("song", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "listen", "put on", "this", "next", "previous"]) else None),
-        ("music", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "listen", "put on", "some", "turn up", "turn down"]) else None),
-
-        # Volume control
-        ("volume up", lambda txt: _handle_volume("up")),
-        ("volume down", lambda txt: _handle_volume("down")),
-        ("increase the volume", lambda txt: _handle_volume("up")),
-        ("decrease the volume", lambda txt: _handle_volume("down")),
-        ("turn it up", lambda txt: _handle_volume("up")),
-        ("turn it down", lambda txt: _handle_volume("down")),
-        ("mute", lambda txt: _handle_volume("mute")),
-        
-        # App launching
-        ("open spotify", lambda txt: _handle_open_app(txt)),
-        ("open chrome", lambda txt: _handle_open_app(txt)),
-        ("launch", lambda txt: _handle_open_app(txt)),
-        
-        # Window management
-        ("switch to", lambda txt: _handle_window_command(txt)),
-        ("focus", lambda txt: _handle_window_command(txt)),
-        ("minimize", lambda txt: _handle_window_command(txt)),
-        ("maximize", lambda txt: _handle_window_command(txt)),
-        ("close window", lambda txt: _handle_window_command(txt)),
-        ("snap", lambda txt: _handle_window_command(txt)),
-        ("arrange", lambda txt: _handle_window_command(txt)),
-        ("tile", lambda txt: _handle_window_command(txt)),
-        ("move window", lambda txt: _handle_window_command(txt)),
-        ("list windows", lambda txt: _handle_window_command(txt)),
-        ("open windows", lambda txt: _handle_window_command(txt)),
-        ("show desktop", lambda txt: _handle_window_command(txt)),
-        
-        # Catch common artist names for direct music triggers
-        ("chris brown", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
-        ("drake", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
-        ("stonebwoy", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
-        ("burna boy", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
-    ]
-
-    matched_keyword = None
-    matched_handler = None
-
-    import re
-
-    for keyword, handler in web_tool_keywords:
-        try:
-            pattern = r'\b' + re.escape(keyword) + r'\b'
-            if re.search(pattern, user_lower):
-                matched_keyword = keyword
-                matched_handler = handler
-                print(f"[Zara] Matched keyword: '{keyword}'")
-                break
-        except re.error:
-            if keyword in user_lower:
-                matched_keyword = keyword
-                matched_handler = handler
-                print(f"[Zara] Matched keyword (fuzzy): '{keyword}'")
-                break
-
-    if matched_handler:
-        try:
-            print(f"[Zara] Handler: {matched_keyword}")
-            result = matched_handler(user_text)
-            
-            # If handler returns a string, speak it
-            if result:
-                print(f"[Zara] Handler success: {result[:80]}...")
-                import local_voice
-                import threading
-                threading.Thread(target=lambda: local_voice.speak(result), daemon=True).start()
-                return result
-            
-            return None
-            
-        except Exception as e:
-            print(f"[Zara] Handler error: {e}")
-            import traceback
-            traceback.print_exc()
-            return _generate_llm_response(user_text)
-
-    # ========== Smart Router Integration ==========
-    # Centralized LLM routing for all complex queries (Bug 15)
-    try:
-        from smart_router import get_router
-        router = get_router()
-        response, endpoint = router.route(
-            user_text,
-            system_prompt=SYSTEM_PROMPT,
-            allow_cache=True,
-            allow_web_search=True
-        )
-        print(f"[Zara] Smart router used: {endpoint.value}")
-
-        # Store in memory
-        try:
-            memory_vault.store_memory(f"User: {user_text}")
-            memory_vault.store_memory(f"Zara: {response}")
-        except:
-            pass
-
-        # Process any actions in the response
-        action_match = _EXECUTE_PATTERN.search(response)
-        if action_match:
-            json_payload = action_match.group(1).strip()
-            if json_payload:
-                try:
-                    _action_executor.execute_payload(json_payload)
-                except Exception as e:
-                    print(f"[Zara Action Err]: {e}")
-            response = _visible_reply_text(response)
-
-        return response
-    except Exception as e:
-        print(f"[Zara] Smart router failed: {e}")
-
-    # Fall back to original Groq streaming if router fails completely
+    """Full streaming Groq implementation."""
     try:
         relevant_memories = memory_vault.retrieve_memory(user_text)
-    except Exception as e:
-        print(f"[Zara Core] memory retrieval failed: {e}")
+    except Exception:
         relevant_memories = []
 
     messages = _build_messages(user_text, relevant_memories)
 
     if not GROQ_API_KEY:
-        # Final fallback
-        return "I'm having trouble connecting to my brain. Please check your internet or API keys."
+        try:
+            from smart_router import get_router
+            router = get_router()
+            response, _ = router.route(user_text, get_dynamic_system_prompt(), allow_cache=True)
+            return response
+        except Exception:
+            return "I'm having trouble connecting. Check your internet or API keys."
 
     payload = {
         "model": MODEL_NAME,
@@ -1071,7 +508,7 @@ def _call_groq_streaming(user_text: str) -> str:
     if isinstance(resp, str):
         return resp
 
-    import json
+    import json as _json
     import local_voice
     import main
 
@@ -1087,52 +524,43 @@ def _call_groq_streaming(user_text: str) -> str:
 
     def _flush_buffer(force: bool = False) -> None:
         nonlocal sentence_buffer, word_count
-
         phrase = sentence_buffer.strip()
         if not phrase:
             return
-
         if force:
             if phrase:
                 local_voice.speak(phrase)
                 sentence_buffer = ""
                 word_count = 0
             return
-
         import re
         sentence_pattern = re.compile(r'^([^.!?:]*[.!?:])(?:\s|$)', re.DOTALL)
-
         match = sentence_pattern.match(phrase)
         if match:
             full_sentence = match.group(1).strip()
             if len(full_sentence.split()) >= 2:
                 local_voice.speak(full_sentence)
                 sentence_buffer = phrase[match.end():].lstrip()
-                word_count = len(sentence_buffer.split()
-                                 ) if sentence_buffer else 0
+                word_count = len(sentence_buffer.split()) if sentence_buffer else 0
                 return
-
         if word_count >= 25:
             local_voice.speak(phrase)
             sentence_buffer = ""
             word_count = 0
-            return
 
+    import re
     for line in resp.iter_lines():
         if not line:
             continue
         line_str = line.decode("utf-8")
-
         if line_str.startswith("data: "):
             line_str = line_str[6:]
         if line_str.strip() == "[DONE]":
             break
-
         try:
-            chunk_data = json.loads(line_str)
-            chunk = chunk_data.get("choices", [{}])[0].get(
-                "delta", {}).get("content", "")
-        except:
+            chunk_data = _json.loads(line_str)
+            chunk = chunk_data.get("choices", [{}])[0].get("delta", {}).get("content", "")
+        except Exception:
             continue
         if not chunk:
             continue
@@ -1186,7 +614,564 @@ def _call_groq_streaming(user_text: str) -> str:
     return reply
 
 
-# ==================== FREE WEB TOOLS HANDLERS ====================
+
+# ==================== EXTRACTED HANDLERS & KEYWORDS ====================
+
+def _handle_send_message(text: str) -> Optional[str]:
+    """Handle send message commands with confirmation flow"""
+    try:
+        import local_voice
+        from messaging_agent import get_messaging_agent
+        
+        agent = get_messaging_agent(speak_callback=local_voicespeak)
+        
+        if agenthas_pending_confirmation():
+            result = agenthandle_confirmation(text)
+            if result:
+                return result
+        
+        request = agentparse_message_command(text)
+        if request:
+            agentinitiate_send(request)
+            return None
+        
+    except Exception as e:
+        print(f"[Messaging Handler] Error: {e}")
+    return None
+
+def _handle_play_music(text: str) -> Optional[str]:
+    """Parse natural language to play music on Spotify."""
+    import json
+    import action_engine
+
+    text_lower = text.lower()
+    app = "spotify"
+    query = text_lower
+
+    command_patterns = [
+        r'\bplay\b', r'\bput on\b', r'\blisten to\b',
+        r'\bi want to hear\b', r'\bcan you play\b',
+        r'\bsome\b(?=\s+music\b)', r'\bon spotify\b',
+        r'\bon youtube\b', r'\bon apple music\b',
+    ]
+    for pattern in command_patterns:
+        query = re.sub(pattern, '', query, flags=re.IGNORECASE)
+    query = re.sub(r'\s+', ' ', query).strip().strip(',').strip()
+
+    # Try to parse "Song by Artist"
+    song_name = ""
+    artist_name = ""
+
+    if " by " in query:
+        parts = query.split(" by ", 1)
+        song_name = parts[0].strip()
+        artist_name = parts[1].strip()
+    elif " from " in query:
+        parts = query.split(" from ", 1)
+        song_name = parts[0].strip()
+        artist_name = parts[1].strip()
+
+    # Pattern 4: "some music" or "music"
+    if not query or query in ["music", "some music", "something"]:
+        # Play user's recent favorites or discover weekly
+        query = ""  # Empty = play whatever's recommended
+        print("[Zara] Playing recommended music")
+
+    # ── CLEAN QUERY ──────────────────────────────────────────
+    if query:
+        # Fix common misspellings
+        corrections = {
+            "stoneboy": "Stonebwoy",
+            "chris brown": "Chris Brown",
+            "burna": "Burna Boy",
+        }
+        for wrong, correct in corrections.items():
+            if wrong in query.lower():
+                query = re.sub(wrong, correct, query, flags=re.IGNORECASE)
+
+    print(f"[Zara] Final query: '{query}'")
+
+    # ── REMEMBER FOR FUTURE ──────────────────────────────────
+    # Only log meaningful entries
+    if song_name and len(song_name) > 2 and song_name not in ["music", "song", "some music"]:
+        prefs.add_recent_song(song_name, artist_name)
+    elif artist_name and len(artist_name) > 2:
+        prefs.add_recent_song("", artist_name)
+    elif query and len(query) > 2 and query not in ["music", "song", "some music"]:
+        # If we only have a cleaned query string
+        prefs.add_recent_song(query, "")
+
+    # ── EXECUTE ──────────────────────────────────────────────
+    try:
+        executor = action_engine.ActionExecutor()
+        payload = json.dumps({
+            "action": "start_app",
+            "app_name": app,
+            "query": query,
+            "music_action": "play_artist" if query else "play_recommended"
+        })
+        executor.execute_payload(payload)
+
+        # Return appropriate response
+        if song_name and artist_name:
+            return f"Playing {song_name} by {artist_name}, Sir."
+        elif query:
+            return f"Playing {query}, Sir."
+        else:
+            return "Playing music, Sir."
+
+    except Exception as e:
+        print(f"[Zara] Handler exception: {e}")
+        import traceback
+        traceback.print_exc()
+        return f"I had trouble playing music, Sir."
+
+def _handle_vision_command(text: str) -> Optional[str]:
+    """Handle vision-related commands."""
+    from zara_eyes import get_eyes
+    import local_voice
+    
+    eyes = get_eyes()
+    text_lower = text.lower()
+    
+    if "what do you see" in text_lower or "what's on my screen" in text_lower:
+        print("[Zara] Forcing fresh screen analysis...")
+        
+        # Force a fresh look
+        context = eyes.look_at()
+        
+        if context and context.raw_description:
+            response = f"I see {context.active_window}. {context.raw_description}"
+            print(f"[Zara] Vision response: {response}")
+            
+            # SPEAK IT IMMEDIATELY
+            import threading
+            def speak_it():
+                local_voice.speak(response)
+            threading.Thread(target=speak_it, daemon=True).start()
+            
+            return response
+        else:
+            # Fallback
+            try:
+                import pyautogui
+                import win32gui
+                window_title = win32gui.GetWindowText(win32gui.GetForegroundWindow())
+                response = f"I see the {window_title} window on your screen, Sir."
+                local_voice.speak(response)
+                return response
+            except:
+                response = "I'm looking at your screen, Sir. Everything appears normal."
+                local_voice.speak(response)
+                return response
+    
+    elif "what window" in text_lower or "what app" in text_lower:
+        window = eyes.get_active_window()
+        response = f"You're currently in {window}, Sir."
+        import threading
+        threading.Thread(target=lambda: local_voice.speak(response), daemon=True).start()
+        return response
+
+    elif "navigate to" in text_lower or "go to" in text_lower:
+        import re
+        import zara_vision
+        vision = zara_vision.get_vision()
+        match = re.search(r'(?:navigate to|go to)\s+(.+)', text_lower)
+        if match:
+            destination = match.group(1).strip()
+            if vision.navigate_to(destination):
+                return f"Navigated to {destination}, Sir."
+            else:
+                return f"I couldn't navigate to {destination}."
+
+    # ── QUESTION ANSWERING ────────────────────────────
+    elif any(word in text_lower for word in ["what color", "how many", "where is", "which button"]):
+        import zara_vision
+        vision = zara_vision.get_vision()
+        return vision.answer_question(text)
+
+    # ── UI ANALYSIS ───────────────────────────────────
+    elif "analyze the screen" in text_lower or "what can i do here" in text_lower:
+        import zara_vision
+        vision = zara_vision.get_vision()
+        result = vision.analyze_ui()
+        response = f"{result.description}\n\n"
+        if result.suggested_actions:
+            response += "Suggested actions:\n• " + \
+                "\n• ".join(result.suggested_actions[:5])
+        return response
+    # ── WAIT FOR SOMETHING ───────────────────────────
+    elif "tell me when" in text_lower or "let me know when" in text_lower:
+        import re
+        import zara_vision
+        vision = zara_vision.get_vision()
+        match = re.search(
+            r'(?:tell me when|let me know when)\s+(.+)', text_lower)
+        if match:
+            element = match.group(1).strip().replace(
+                " appears", "").replace(" shows up", "")
+
+            def monitor_and_notify():
+                if vision.wait_for_element(element, timeout=60):
+                    import local_voice
+                    local_voice.speak(
+                        f"Sir, {element} has appeared on the screen.")
+                else:
+                    import local_voice
+                    local_voice.speak(
+                        f"Sir, {element} did not appear within the time limit.")
+
+            import threading
+            threading.Thread(target=monitor_and_notify,
+                             daemon=True).start()
+            return f"I'm keeping an eye out for {element}, Sir."
+
+    return "I'm looking, Sir."
+
+def _handle_window_command(text: str) -> Optional[str]:
+    """Handle window management commands."""
+    from zara_window_manager import get_window_manager
+    
+    wm = get_window_manager()
+    text_lower = text.lower()
+    
+    # ── FOCUS / SWITCH ──────────────────────────────────────
+    if "switch to" in text_lower or "focus" in text_lower or "go to" in text_lower:
+        import re
+        match = re.search(r'(?:switch to|focus|go to)\s+(.+)', text_lower)
+        if match:
+            app = match.group(1).strip()
+            if wm.focus_window(title_contains=app) or wm.focus_window(process_contains=app):
+                return f"Switched to {app}, Sir."
+            return f"I couldn't find {app}, Sir."
+    
+    # ── MINIMIZE ────────────────────────────────────────────
+    elif "minimize" in text_lower:
+        if "all" in text_lower or "everything" in text_lower:
+            wm.minimize_all()
+            return "All windows minimized, Sir."
+        else:
+            import re
+            match = re.search(r'minimize\s+(.+)', text_lower)
+            if match:
+                app = match.group(1).strip()
+                if wm.minimize_window(title_contains=app):
+                    return f"Minimized {app}, Sir."
+            else:
+                # Minimize current window
+                wm.minimize_window()
+                return "Window minimized, Sir."
+    
+    # ── MAXIMIZE ────────────────────────────────────────────
+    elif "maximize" in text_lower:
+        import re
+        match = re.search(r'maximize\s+(.+)', text_lower)
+        if match:
+            app = match.group(1).strip()
+            if wm.maximize_window(title_contains=app):
+                return f"Maximized {app}, Sir."
+        else:
+            wm.maximize_window()
+            return "Window maximized, Sir."
+    
+    # ── CLOSE ───────────────────────────────────────────────
+    elif "close" in text_lower and "window" in text_lower:
+        import re
+        match = re.search(r'close\s+(.+?)(?:\s+window|\s*$)', text_lower)
+        if match:
+            app = match.group(1).strip()
+            if wm.close_window(title_contains=app):
+                return f"Closed {app}, Sir."
+        else:
+            wm.close_window()
+            return "Window closed, Sir."
+    
+    # ── SNAP ────────────────────────────────────────────────
+    elif "snap" in text_lower:
+        if "left" in text_lower:
+            wm.snap_left()
+            return "Window snapped to left, Sir."
+        elif "right" in text_lower:
+            wm.snap_right()
+            return "Window snapped to right, Sir."
+        elif "top" in text_lower or "maximize" in text_lower:
+            wm.snap_top()
+            return "Window maximized, Sir."
+    
+    # ── ARRANGE ─────────────────────────────────────────────
+    elif "arrange" in text_lower or "tile" in text_lower:
+        if "side by side" in text_lower:
+            # Try to arrange current and previous window
+            return "Which two windows would you like to arrange, Sir?"
+        elif "grid" in text_lower:
+            return "Tell me which windows to arrange, Sir."
+    
+    # ── MOVE ────────────────────────────────────────────────
+    elif "move" in text_lower and "window" in text_lower:
+        import re
+        import pyautogui
+        # Move to specific position: "move window to top left"
+        if "top" in text_lower and "left" in text_lower:
+            wm.move_window(None, 0, 0)
+            return "Window moved to top left, Sir."
+        elif "top" in text_lower and "right" in text_lower:
+            screen_width = pyautogui.size()[0]
+            wm.move_window(None, screen_width // 2, 0)
+            return "Window moved to top right, Sir."
+        elif "center" in text_lower:
+            screen_width = pyautogui.size()[0]
+            screen_height = pyautogui.size()[1]
+            wm.move_window(None, screen_width // 4, screen_height // 4)
+            return "Window centered, Sir."
+    
+    # ── LIST WINDOWS ────────────────────────────────────────
+    elif "what windows" in text_lower or "list windows" in text_lower or "open windows" in text_lower:
+        return wm.list_windows()
+    
+    # ── SHOW DESKTOP ────────────────────────────────────────
+    elif "show desktop" in text_lower:
+        wm.minimize_all()
+        return "Desktop shown, Sir."
+    
+    elif "restore windows" in text_lower or "show windows" in text_lower:
+        wm.restore_all()
+        return "Windows restored, Sir."
+    
+    return None
+
+# Check if this should use free web tools first
+# Order: Specific phrases first to avoid shadowing (Issue A)
+
+web_tool_keywords = [
+        ("send a message", lambda txt: _handle_send_message(txt)),
+        ("send message", lambda txt: _handle_send_message(txt)),
+        ("text someone", lambda txt: _handle_send_message(txt)),
+        ("message someone", lambda txt: _handle_send_message(txt)),
+        ("dm ", lambda txt: _handle_send_message(txt)),
+        ("send a dm", lambda txt: _handle_send_message(txt)),
+    # Vision Commands
+    ("what do you see", lambda txt: _handle_vision_command(txt)),
+    ("what's on my screen", lambda txt: _handle_vision_command(txt)),
+    ("is there an error", lambda txt: _handle_vision_command(txt)),
+    ("analyze the screen", lambda txt: _handle_vision_command(txt)),
+    ("analyze this", lambda txt: _handle_vision_command(txt)),
+    ("look at", lambda txt: _handle_vision_command(txt)),
+    ("read this", lambda txt: _handle_vision_command(txt)),
+    ("read the", lambda txt: _handle_vision_command(txt)),
+    ("what window", lambda txt: _handle_vision_command(txt)),
+
+    # Web Interaction (Specific first)
+    ("search the web", lambda txt: _handle_web_search_direct(txt)),
+    ("look up on google", lambda txt: _handle_web_search_direct(txt)),
+    ("search for", lambda txt: _handle_web_search_direct(txt)),
+    ("google", lambda txt: _handle_web_search_direct(txt)),
+    ("open website", lambda txt: _handle_browse_website(txt)),
+    ("navigate to", lambda txt: _handle_browse_website(txt)),
+    ("go to", lambda txt: _handle_browse_website(txt)),
+    ("visit", lambda txt: _handle_browse_website(txt)),
+    ("browse", lambda txt: _handle_browse_website(txt)),
+    ("submit form", lambda txt: _handle_fill_form(txt)),
+    ("fill form", lambda txt: _handle_fill_form(txt)),
+
+    # Space & Science
+    ("astronomy picture", lambda txt: _handle_nasa_apod()),
+    ("nasa picture", lambda txt: _handle_nasa_apod()),
+    ("space picture", lambda txt: _handle_nasa_apod()),
+    ("nasa", lambda txt: _handle_nasa_apod()),
+    ("rocket launch", lambda txt: _handle_spacex_launch()),
+    ("next launch", lambda txt: _handle_spacex_launch()),
+    ("spacex", lambda txt: _handle_spacex_launch()),
+    ("space station", lambda txt: _handle_iss_location()),
+    ("iss", lambda txt: _handle_iss_location()),
+    ("astronomy", lambda txt: _handle_astronomy(txt)),
+    ("sunrise", lambda txt: _handle_astronomy(txt)),
+    ("sunset", lambda txt: _handle_astronomy(txt)),
+    ("moon", lambda txt: _handle_astronomy(txt)),
+
+    # Knowledge & Research
+    ("meaning of", lambda txt: _handle_definition(txt)),
+    ("what does", lambda txt: _handle_definition(txt) if "mean" in txt else None),
+    ("definition", lambda txt: _handle_definition(txt)),
+    ("define", lambda txt: _handle_definition(txt)),
+    ("synonym", lambda txt: _handle_synonyms(txt)),
+    ("rhyme", lambda txt: _handle_rhymes(txt)),
+    ("weather", lambda txt: _handle_weather(txt)),
+    ("temperature", lambda txt: _handle_weather(txt)),
+    ("forecast", lambda txt: _handle_weather(txt)),
+    ("tell me about", lambda txt: _handle_search(txt)),
+    ("information on", lambda txt: _handle_search(txt)),
+    ("search", lambda txt: _handle_search(txt)),
+    ("find", lambda txt: _handle_search(txt)),
+    ("look up", lambda txt: _handle_search(txt)),
+    ("what is", lambda txt: _handle_search(txt)),
+    ("who is", lambda txt: _handle_search(txt)),
+
+    # Entertainment
+    ("make me laugh", lambda txt: _handle_joke()),
+    ("joke", lambda txt: _handle_joke()),
+    ("funny", lambda txt: _handle_joke()),
+    ("inspiration", lambda txt: _handle_quote()),
+    ("motivation", lambda txt: _handle_quote()),
+    ("quote", lambda txt: _handle_quote()),
+    ("cat fact", lambda txt: _handle_cat_fact()),
+    ("dog fact", lambda txt: _handle_dog_fact()),
+    ("fact", lambda txt: _handle_useless_fact()),
+    ("what should i do", lambda txt: _handle_bored_activity()),
+    ("bored", lambda txt: _handle_bored_activity()),
+    ("help me", lambda txt: _handle_advice()),
+    ("advice", lambda txt: _handle_advice()),
+
+    # Crypto & Finance
+    ("exchange rate", lambda txt: _handle_exchange_rate(txt)),
+    ("price of", lambda txt: _handle_crypto(txt) if any(c in txt for c in ["bitcoin", "ethereum", "doge", "crypto"]) else None),
+    ("bitcoin", lambda txt: _handle_crypto("bitcoin")),
+    ("btc", lambda txt: _handle_crypto("bitcoin")),
+    ("ethereum", lambda txt: _handle_crypto("ethereum")),
+    ("eth", lambda txt: _handle_crypto("ethereum")),
+    ("dogecoin", lambda txt: _handle_crypto("dogecoin")),
+    ("doge", lambda txt: _handle_crypto("dogecoin")),
+    ("crypto", lambda txt: _handle_crypto(txt)),
+    ("convert", lambda txt: _handle_exchange_rate(txt)),
+    ("usd to", lambda txt: _handle_exchange_rate(txt)),
+
+    # News & Tech
+    ("hacker news", lambda txt: _handle_hacker_news()),
+    ("hn", lambda txt: _handle_hacker_news()),
+    ("dev.to", lambda txt: _handle_dev_to()),
+    ("github", lambda txt: _handle_github(txt)),
+    ("npm", lambda txt: _handle_npm(txt)),
+    ("pypi", lambda txt: _handle_pypi(txt)),
+    ("pip package", lambda txt: _handle_pypi(txt)),
+    # System & Memory
+    ("calculate", lambda txt: _handle_calculator(txt)),
+    ("what is", lambda txt: _handle_calculator(txt) if any(c in txt for c in ["+", "-", "*", "/"]) else _handle_search(txt)),
+    ("system status", lambda txt: _handle_system_status(txt)),
+    ("cpu usage", lambda txt: _handle_system_status(txt)),
+    ("ram usage", lambda txt: _handle_system_status(txt)),
+    ("memory usage", lambda txt: _handle_system_status(txt)),
+    ("remind me", lambda txt: _handle_reminder(txt)),
+
+    # Utility
+    ("what's my ip", lambda txt: _handle_ip_info(txt)),
+    ("ip address", lambda txt: _handle_ip_info(txt)),
+    ("my ip", lambda txt: _handle_ip_info(txt)),
+    ("validate email", lambda txt: _handle_email_validation(txt)),
+    ("check email", lambda txt: _handle_email_validation(txt)),
+    ("shorten", lambda txt: _handle_shorten_url(txt)),
+    ("qr code", lambda txt: _handle_qr_code(txt)),
+    ("time in", lambda txt: _handle_timezone(txt)),
+    ("what time", lambda txt: _handle_timezone(txt)),
+    ("timezone", lambda txt: _handle_timezone(txt)),
+    ("public holiday", lambda txt: _handle_holidays(txt)),
+    ("holiday", lambda txt: _handle_holidays(txt)),
+    ("what can you do", lambda txt: _handle_what_can_you_do()),
+    ("capabilities", lambda txt: _handle_what_can_you_do()),
+    ("skills", lambda txt: _handle_what_can_you_do()),
+    ("what do you know", lambda txt: _handle_what_can_you_do()),
+    ("help me understand", lambda txt: _handle_what_can_you_do()),
+
+    # Media Search
+    ("movie", lambda txt: _handle_movie_info(txt)),
+    ("film", lambda txt: _handle_movie_info(txt)),
+    ("book", lambda txt: _handle_book_info(txt)),
+    ("novel", lambda txt: _handle_book_info(txt)),
+    ("pokemon", lambda txt: _handle_pokemon(txt)),
+    ("pokémon", lambda txt: _handle_pokemon(txt)),
+
+    # Food & Recipes
+    ("how do i make", lambda txt: _handle_recipe(txt)),
+    ("how to make", lambda txt: _handle_recipe(txt)),
+    ("how to cook", lambda txt: _handle_recipe(txt)),
+    ("how to bake", lambda txt: _handle_recipe(txt)),
+    ("recipe", lambda txt: _handle_recipe(txt)),
+    ("cook", lambda txt: _handle_recipe(txt)),
+
+    # Music & Media
+    ("pause music", lambda txt: _handle_play_music(txt)),
+    ("pause song", lambda txt: _handle_play_music(txt)),
+    ("next track", lambda txt: _handle_play_music(txt)),
+    ("next song", lambda txt: _handle_play_music(txt)),
+    ("skip this", lambda txt: _handle_play_music(txt)),
+    ("previous song", lambda txt: _handle_play_music(txt)),
+    ("play music", lambda txt: _handle_play_music(txt)),
+    ("play song", lambda txt: _handle_play_music(txt)),
+    ("play some", lambda txt: _handle_play_music(txt)),
+    ("put on", lambda txt: _handle_play_music(txt)),
+    ("listen to", lambda txt: _handle_play_music(txt)),
+    ("spotify", lambda txt: _handle_play_music(txt) if "play" in txt.lower() else None),
+    
+    # Contextual music guards
+    ("play", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["music", "song", "spotify", "artist", "album", "track", "by "]) else None),
+    ("song", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "listen", "put on", "this", "next", "previous"]) else None),
+    ("music", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "listen", "put on", "some", "turn up", "turn down"]) else None),
+
+    # Volume control
+    ("volume up", lambda txt: _handle_volume("up")),
+    ("volume down", lambda txt: _handle_volume("down")),
+    ("increase the volume", lambda txt: _handle_volume("up")),
+    ("decrease the volume", lambda txt: _handle_volume("down")),
+    ("turn it up", lambda txt: _handle_volume("up")),
+    ("turn it down", lambda txt: _handle_volume("down")),
+    ("mute", lambda txt: _handle_volume("mute")),
+    
+    # App launching
+    ("open spotify", lambda txt: _handle_open_app(txt)),
+    ("open chrome", lambda txt: _handle_open_app(txt)),
+    ("launch", lambda txt: _handle_open_app(txt)),
+    
+    # Window management
+    ("switch to", lambda txt: _handle_window_command(txt)),
+    ("focus", lambda txt: _handle_window_command(txt)),
+    ("minimize", lambda txt: _handle_window_command(txt)),
+    ("maximize", lambda txt: _handle_window_command(txt)),
+    ("close window", lambda txt: _handle_window_command(txt)),
+    ("snap", lambda txt: _handle_window_command(txt)),
+    ("arrange", lambda txt: _handle_window_command(txt)),
+    ("tile", lambda txt: _handle_window_command(txt)),
+    ("move window", lambda txt: _handle_window_command(txt)),
+    ("list windows", lambda txt: _handle_window_command(txt)),
+    ("open windows", lambda txt: _handle_window_command(txt)),
+    ("show desktop", lambda txt: _handle_window_command(txt)),
+    
+    # Catch common artist names for direct music triggers
+    ("chris brown", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
+    ("drake", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
+    ("stonebwoy", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
+    ("burna boy", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
+]
+
+
+
+def _handle_volume(command: str) -> Optional[str]:
+    """Route volume commands through the silent volume controller."""
+    try:
+        from volume_controller import get_volume_controller
+        vc = get_volume_controller()
+        honorific = "Sir"
+        try:
+            from gender_detector import get_honorific
+            honorific = get_honorific()
+        except Exception:
+            pass
+
+        if command == "up":
+            success, new_level = vc.volume_up(0.10)
+            return f"Volume up to {int(new_level * 100)}%, {honorific}." if success else f"Couldn't adjust volume, {honorific}."
+        elif command == "down":
+            success, new_level = vc.volume_down(0.10)
+            return f"Volume down to {int(new_level * 100)}%, {honorific}." if success else f"Couldn't adjust volume, {honorific}."
+        elif command == "mute":
+            success, is_muted = vc.toggle_mute()
+            state_str = "Muted" if is_muted else "Unmuted"
+            return f"{state_str}, {honorific}."
+        else:
+            # Try natural language parse
+            from volume_controller import handle_volume_command
+            return handle_volume_command(command)
+    except Exception as e:
+        print(f"[Volume Handler] Error: {e}")
+        return None
+
 
 def _handle_weather(query: str) -> Optional[str]:
     """Get weather for a location."""

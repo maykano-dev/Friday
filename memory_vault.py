@@ -242,14 +242,19 @@ def init_db() -> None:
             _handle_corrupt_db()
 
 def _migrate_friday_prefix(conn: sqlite3.Connection):
-    """One-time migration: Friday -> Zara prefixes."""
+    """One-time migration: Friday -> Zara prefixes. Guarded by user_version pragma."""
     try:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version >= 1:
+            return  # Migration already applied
         conn.execute("""
             UPDATE memories 
             SET memory_text = REPLACE(memory_text, 'Friday: ', 'Zara: ')
             WHERE memory_text LIKE 'Friday: %'
         """)
-        print("[Memory Vault] Migrated legacy identity prefixes.")
+        # Bump version so we never run this again
+        conn.execute("PRAGMA user_version = 1")
+        print("[Memory Vault] Migrated legacy identity prefixes (v0 -> v1).")
     except Exception as e:
         print(f"[Memory Vault] Migration failed: {e}")
 

@@ -770,20 +770,19 @@ Return purely valid JSON without markdown tags."""
             import time
 
             if command == "volume_up" or command == "up":
-                for _ in range(5):
-                    pyautogui.press("volumeup")
-                    time.sleep(0.03)
-                print("[Zara Action] Volume up")
+                from volume_controller import get_volume_controller
+                get_volume_controller().volume_up(0.10)
+                print("[Zara Action] Volume up (Silent)")
 
             elif command == "volume_down" or command == "down":
-                for _ in range(5):
-                    pyautogui.press("volumedown")
-                    time.sleep(0.03)
-                print("[Zara Action] Volume down")
+                from volume_controller import get_volume_controller
+                get_volume_controller().volume_down(0.10)
+                print("[Zara Action] Volume down (Silent)")
 
             elif command == "mute":
-                pyautogui.press("volumemute")
-                print("[Zara Action] Mute")
+                from volume_controller import get_volume_controller
+                get_volume_controller().toggle_mute()
+                print("[Zara Action] Mute (Silent)")
 
             elif command == "play_pause":
                 pyautogui.press("playpause")
