@@ -382,6 +382,14 @@ class ContinuousListener:
                 print(f"[Ear] BG detector error (passing through): {e}")
 
             print(f"\n\U0001f5e3\ufe0f You: {cleaned}")
+
+            # Passive gender detection — update honorific from speech cues
+            try:
+                from gender_detector import get_gender_detector
+                get_gender_detector().detect_from_text(cleaned)
+            except Exception:
+                pass
+
             self.result_queue.put(cleaned)
 
         stream.stop_stream()
