@@ -83,15 +83,15 @@ def _process_utterance(text: str, proactive) -> None:
                 ui.set_state("TALKING")
             local_voice.speak(routed.spoken)
 
-        # Wait for speech to finish before releasing lock
-        deadline = time.time() + 30  # Safety timeout
-        while getattr(state.is_talking, 'value', False) and time.time() < deadline:
-            time.sleep(0.05)
+    # Wait for speech to finish before resetting UI (OUTSIDE THE LOCK)
+    deadline = time.time() + 30  # Safety timeout
+    while getattr(state.is_talking, 'value', False) and time.time() < deadline:
+        time.sleep(0.05)
 
-        if ui:
-            ui.set_subtitle_text("")
-            ui.set_user_text("")
-            ui.set_state("STANDBY")
+    if ui:
+        ui.set_subtitle_text("")
+        ui.set_user_text("")
+        ui.set_state("STANDBY")
 
 
 def run_Zara():

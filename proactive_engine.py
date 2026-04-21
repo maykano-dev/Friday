@@ -78,7 +78,20 @@ class ProactiveEngine:
                 
             self._generate_and_inject_objective()
 
+    def _check_ollama_health(self) -> bool:
+        """Verify Ollama is reachable before attempting heavy synthesis."""
+        try:
+            # Quick health check
+            requests.get("http://localhost:11434/api/tags", timeout=2)
+            return True
+        except:
+            return False
+
     def _generate_and_inject_objective(self) -> None:
+        if not self._check_ollama_health():
+            print("[Proactive Engine] Ollama offline - skipping synthesis")
+            return
+
         # Fetch the last 50 interaction logs
         memories = memory_vault.get_recent_memories(limit=50)
         if not memories:

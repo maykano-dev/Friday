@@ -65,45 +65,73 @@ def disable_ducking():
     _ducking_enabled = False
     print("[Voice] Volume ducking disabled")
 
+def _get_volume_interface():
+    """Helper: returns the IAudioEndpointVolume COM interface, or None."""
+    try:
+        from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+        from ctypes import cast, POINTER
+        from comtypes import CLSCTX_ALL
+        devices = AudioUtilities.GetSpeakers()
+        interface = devices.Activate(
+            IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
+        return cast(interface, POINTER(IAudioEndpointVolume))
+    except Exception:
+        try:
+            # pycaw ≥ 20230901 new API
+            from pycaw.utils import AudioUtilities
+            sessions = AudioUtilities.GetAllSessions()
+            # fall through to None — use pyautogui fallback
+        except Exception:
+            pass
+        return None
+
 def _lower_media_volume():
-    """Lower system volume when Zara starts speaking using pycaw."""
     global _ducking_active, _saved_volume
     if not _ducking_enabled:
         return
     with _ducking_lock:
         if _ducking_active:
             return
-        try:
-            devices = AudioUtilities.GetSpeakers()
-            interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-            volume = cast(interface, POINTER(IAudioEndpointVolume))
-            _saved_volume = volume.GetMasterVolumeLevelScalar()
-            target = max(0.0, _saved_volume - 0.4)   # duck by 40%
-            volume.SetMasterVolumeLevelScalar(target, None)
-            _ducking_active = True
-            print(f"[Voice] Volume ducked from {_saved_volume:.2f} to {target:.2f}")
-        except Exception as e:
-            print(f"[Voice] Ducking failed: {e}")
+        vol = _get_volume_interface()
+        if vol:
+            try:
+                _saved_volume = vol.GetMasterVolumeLevelScalar()
+                target = max(0.0, _saved_volume - 0.4)
+                vol.SetMasterVolumeLevelScalar(target, None)
+                _ducking_active = True
+                return
+            except Exception as e:
+                print(f"[Voice] Ducking failed: {e}")
+        # Fallback: pyautogui volume keys
+        import pyautogui, time
+        for _ in range(4):
+            pyautogui.press("volumedown")
+            time.sleep(0.02)
+        _ducking_active = True
 
 def _restore_media_volume():
-    """Restore media volume after Zara finishes speaking using pycaw."""
     global _ducking_active, _saved_volume
     if not _ducking_enabled:
         return
     with _ducking_lock:
         if not _ducking_active:
             return
-        try:
-            if _saved_volume >= 0.0:
-                devices = AudioUtilities.GetSpeakers()
-                interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
-                volume = cast(interface, POINTER(IAudioEndpointVolume))
-                volume.SetMasterVolumeLevelScalar(_saved_volume, None)
-                print(f"[Voice] Volume restored to {_saved_volume:.2f}")
-            _ducking_active = False
-            _saved_volume = -1.0
-        except Exception as e:
-            print(f"[Voice] Restore failed: {e}")
+        vol = _get_volume_interface()
+        if vol and _saved_volume >= 0.0:
+            try:
+                vol.SetMasterVolumeLevelScalar(_saved_volume, None)
+                _ducking_active = False
+                _saved_volume = -1.0
+                return
+            except Exception as e:
+                print(f"[Voice] Restore failed: {e}")
+        # Fallback: restore with volume keys
+        import pyautogui, time
+        for _ in range(4):
+            pyautogui.press("volumeup")
+            time.sleep(0.02)
+        _ducking_active = False
+        _saved_volume = -1.0
 
 
 def mark_startup_complete():

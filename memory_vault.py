@@ -326,15 +326,17 @@ def retrieve_memory(user_query: str) -> List[str]:
     # DB ranks rows for us in a single query. Still pure SQLite.
     score_terms = []
     where_terms = []
-    params: List[str] = []
+    score_params = []
+    where_params = []
+    
     for kw in keywords:
         like = f"%{kw}%"
         score_terms.append(
             "(CASE WHEN memory_text LIKE ? OR keyword_tags LIKE ? THEN 1 ELSE 0 END)"
         )
-        params.extend([like, like])
-        where_terms.append("memory_text LIKE ? OR keyword_tags LIKE ?")
-        params.extend([like, like])
+        score_params.extend([like, like])
+        where_terms.append("(memory_text LIKE ? OR keyword_tags LIKE ?)")
+        where_params.extend([like, like])
 
     score_expr = " + ".join(score_terms)
     where_expr = " OR ".join(where_terms)
@@ -346,11 +348,13 @@ def retrieve_memory(user_query: str) -> List[str]:
         f"ORDER BY score DESC, id DESC "
         f"LIMIT ?"
     )
-    params.append(TOP_RESULTS)
+    
+    # Combined parameters in exact order of appearance in SQL
+    final_params = score_params + where_params + [TOP_RESULTS]
 
     try:
         with _connect() as conn:
-            rows = conn.execute(sql, params).fetchall()
+            rows = conn.execute(sql, final_params).fetchall()
     except sqlite3.Error as e:
         print(f"[Zara Vault] retrieve_memory failed: {e}")
         return []

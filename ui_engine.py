@@ -3,6 +3,7 @@ import math
 import random
 import threading
 import time
+import os
 
 MANUAL_INGEST_CMD = pygame.USEREVENT + 1
 

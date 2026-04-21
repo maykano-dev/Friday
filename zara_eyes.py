@@ -251,6 +251,7 @@ class ZaraEyes:
                 window_title = "Unknown"
             
             # Try actual vision analysis with a short timeout
+            screenshot = pyautogui.screenshot()
             self._analyze_screen(screenshot, window_title)
             return self.current_context
             

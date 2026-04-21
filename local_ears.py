@@ -36,6 +36,9 @@ if os.path.exists(_env_path):
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 
+# Wake words stripped from the front of transcriptions
+wake_words = ["hey zara", "okay zara", "ok zara", "hi zara", "zara,"]
+
 # VAD Lazy Loader
 _vad_model = None
 
@@ -366,13 +369,20 @@ class ContinuousListener:
                     wf.setsampwidth(pa.get_sample_size(self.FORMAT))
                     wf.setframerate(self.RATE)
                     wf.writeframes(b''.join(frames))
-                audio_bytes = wav_buffer.getvalue()
-                
-                import asyncio
-                return asyncio.run(self._transcribe_deepgram_streaming(audio_bytes))
-            except Exception as e:
-                print(f"[Ear] Deepgram error: {e}")
-                # Fallback to Groq
+            # Use a fresh event loop in this thread instead of asyncio.run()
+            import asyncio
+            loop = asyncio.new_event_loop()
+            try:
+                result = loop.run_until_complete(
+                    self._transcribe_deepgram_streaming(audio_bytes)
+                )
+            finally:
+                loop.close()
+            if result:
+                return result
+        except Exception as e:
+            print(f"[Ear] Deepgram error: {e}")
+            # Fallback to Groq
 
         # 2. Try Groq
         if not GROQ_API_KEY:

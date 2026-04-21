@@ -44,6 +44,9 @@ class LearningEngine(threading.Thread):
                 if not tasks:
                     continue
 
+                if not self._check_ollama_health():
+                    continue
+
                 # Take the oldest un-summarized failed task
                 task = tasks[0]
                 task_id = task["id"]
@@ -58,6 +61,15 @@ class LearningEngine(threading.Thread):
                     memory_vault.mark_task_processed(task_id, summary)
                     print(
                         f"[Learning Engine] Task {task_id} summarized and committed to vault.")
+
+    def _check_ollama_health(self) -> bool:
+        """Verify Ollama is reachable before attempting heavy synthesis."""
+        try:
+            # Quick health check
+            requests.get("http://localhost:11434/api/tags", timeout=2)
+            return True
+        except:
+            return False
 
     def _generate_best_practices(self, code: str) -> str:
         prompt = (

@@ -19,8 +19,7 @@ import memory_vault
 from user_prefs import get_prefs
 from zara_vision import get_vision, VisionMode
 
-_in_handler = False
-_handler_lock = threading.Lock()
+_handler_active = threading.Event()
 _in_vision_handler = False
 
 # ── Groq Cloud API ──────────────────────────────────────────────────────────
@@ -384,6 +383,10 @@ def _build_messages(
         elif m.startswith("Friday:"):
             messages.append(
                 {"role": "assistant", "content": m.replace("Friday: ", "", 1)})
+        else:
+            # Fallback for un-prefixed legacy/tool memories (Issue C)
+            messages.append(
+                {"role": "assistant", "content": f"Past insight: {m}"})
 
     # Chroma Context Injection
     semantic_matches = memory_vault.semantic_search(user_text)
@@ -401,14 +404,24 @@ def _build_messages(
 
 
 def generate_response(user_text: str) -> str:
-    """Send user_text to the best available endpoint and return reply."""
-    global _in_handler
+    """Entry point with re-entrancy protection."""
+    if not user_text or not user_text.strip():
+        return "I didn't catch that."
 
-    with _handler_lock:
-        if _in_handler:
-            print("[Zara] WARNING: Recursive handler call detected, using LLM fallback")
-            return _generate_llm_response(user_text)
-        _in_handler = True
+    # Non-blocking guard: if already handling, fall straight to LLM
+    if _handler_active.is_set():
+        print("[Zara] Re-entrant call — using direct LLM")
+        return _generate_llm_response(user_text)
+
+    _handler_active.set()
+    try:
+        return _generate_response_impl(user_text)
+    finally:
+        _handler_active.clear()
+
+
+def _generate_response_impl(user_text: str) -> str:
+    """Send user_text to the best available endpoint and return reply."""
 
     if not user_text or not user_text.strip():
         return "I didn't catch that."
@@ -558,9 +571,13 @@ def generate_response(user_text: str) -> str:
         print(f"[Zara] Final query: '{query}'")
 
         # ── REMEMBER FOR FUTURE ──────────────────────────────────
-        if song_name and artist_name:
+        # Only log meaningful entries
+        if song_name and len(song_name) > 2 and song_name not in ["music", "song", "some music"]:
             prefs.add_recent_song(song_name, artist_name)
-        elif query:
+        elif artist_name and len(artist_name) > 2:
+            prefs.add_recent_song("", artist_name)
+        elif query and len(query) > 2 and query not in ["music", "song", "some music"]:
+            # If we only have a cleaned query string
             prefs.add_recent_song(query, "")
 
         # ── EXECUTE ──────────────────────────────────────────────
@@ -802,209 +819,212 @@ def generate_response(user_text: str) -> str:
         return None
 
     # Check if this should use free web tools first
-    web_tool_keywords = {
-        # Knowledge & Research
-        "weather": lambda txt: _handle_weather(txt),
-        "temperature": lambda txt: _handle_weather(txt),
-        "forecast": lambda txt: _handle_weather(txt),
-        "define": lambda txt: _handle_definition(txt),
-        "definition": lambda txt: _handle_definition(txt),
-        "meaning of": lambda txt: _handle_definition(txt),
-        "what does": lambda txt: _handle_definition(txt) if "mean" in txt else None,
-        "synonym": lambda txt: _handle_synonyms(txt),
-        "rhyme": lambda txt: _handle_rhymes(txt),
-        "search": lambda txt: _handle_search(txt),
-        "find": lambda txt: _handle_search(txt),
-        "look up": lambda txt: _handle_search(txt),
-        "tell me about": lambda txt: _handle_search(txt),
-        "what is": lambda txt: _handle_search(txt),
-        "who is": lambda txt: _handle_search(txt),
-        "information on": lambda txt: _handle_search(txt),
+    # Order: Specific phrases first to avoid shadowing (Issue A)
+    web_tool_keywords = [
+        # Vision Commands
+        ("what do you see", lambda txt: _handle_vision_command(txt)),
+        ("what's on my screen", lambda txt: _handle_vision_command(txt)),
+        ("is there an error", lambda txt: _handle_vision_command(txt)),
+        ("analyze the screen", lambda txt: _handle_vision_command(txt)),
+        ("analyze this", lambda txt: _handle_vision_command(txt)),
+        ("look at", lambda txt: _handle_vision_command(txt)),
+        ("read this", lambda txt: _handle_vision_command(txt)),
+        ("read the", lambda txt: _handle_vision_command(txt)),
+        ("what window", lambda txt: _handle_vision_command(txt)),
 
-        # Entertainment
-        "joke": lambda txt: _handle_joke(),
-        "funny": lambda txt: _handle_joke(),
-        "make me laugh": lambda txt: _handle_joke(),
-        "quote": lambda txt: _handle_quote(),
-        "inspiration": lambda txt: _handle_quote(),
-        "motivation": lambda txt: _handle_quote(),
-        "cat fact": lambda txt: _handle_cat_fact(),
-        "dog fact": lambda txt: _handle_dog_fact(),
-        "fact": lambda txt: _handle_useless_fact(),
-        "bored": lambda txt: _handle_bored_activity(),
-        "what should i do": lambda txt: _handle_bored_activity(),
-        "advice": lambda txt: _handle_advice(),
-        "help me": lambda txt: _handle_advice(),
-
-        # Crypto & Finance
-        "bitcoin": lambda txt: _handle_crypto("bitcoin"),
-        "btc": lambda txt: _handle_crypto("bitcoin"),
-        "ethereum": lambda txt: _handle_crypto("ethereum"),
-        "eth": lambda txt: _handle_crypto("ethereum"),
-        "doge": lambda txt: _handle_crypto("dogecoin"),
-        "dogecoin": lambda txt: _handle_crypto("dogecoin"),
-        "crypto": lambda txt: _handle_crypto(txt),
-        "price of": lambda txt: _handle_crypto(txt) if any(c in txt for c in ["bitcoin", "ethereum", "doge", "crypto"]) else None,
-        "exchange rate": lambda txt: _handle_exchange_rate(txt),
-        "convert": lambda txt: _handle_exchange_rate(txt),
-        "usd to": lambda txt: _handle_exchange_rate(txt),
-
-        # News & Tech
-        "hacker news": lambda txt: _handle_hacker_news(),
-        "hn": lambda txt: _handle_hacker_news(),
-        "dev.to": lambda txt: _handle_dev_to(),
-        "github": lambda txt: _handle_github(txt),
-        "npm": lambda txt: _handle_npm(txt),
-        "pypi": lambda txt: _handle_pypi(txt),
-        "pip package": lambda txt: _handle_pypi(txt),
+        # Web Interaction (Specific first)
+        ("search the web", lambda txt: _handle_web_search_direct(txt)),
+        ("look up on google", lambda txt: _handle_web_search_direct(txt)),
+        ("search for", lambda txt: _handle_web_search_direct(txt)),
+        ("google", lambda txt: _handle_web_search_direct(txt)),
+        ("open website", lambda txt: _handle_browse_website(txt)),
+        ("navigate to", lambda txt: _handle_browse_website(txt)),
+        ("go to", lambda txt: _handle_browse_website(txt)),
+        ("visit", lambda txt: _handle_browse_website(txt)),
+        ("browse", lambda txt: _handle_browse_website(txt)),
+        ("submit form", lambda txt: _handle_fill_form(txt)),
+        ("fill form", lambda txt: _handle_fill_form(txt)),
 
         # Space & Science
-        "nasa picture": lambda txt: _handle_nasa_apod(),
-        "astronomy picture": lambda txt: _handle_nasa_apod(),
-        "nasa": lambda txt: _handle_nasa_apod(),
-        "space picture": lambda txt: _handle_nasa_apod(),
-        "astronomy": lambda txt: _handle_astronomy(txt),
-        "sunrise": lambda txt: _handle_astronomy(txt),
-        "sunset": lambda txt: _handle_astronomy(txt),
-        "moon": lambda txt: _handle_astronomy(txt),
-        "iss": lambda txt: _handle_iss_location(),
-        "space station": lambda txt: _handle_iss_location(),
-        "spacex": lambda txt: _handle_spacex_launch(),
-        "next launch": lambda txt: _handle_spacex_launch(),
-        "rocket launch": lambda txt: _handle_spacex_launch(),
+        ("astronomy picture", lambda txt: _handle_nasa_apod()),
+        ("nasa picture", lambda txt: _handle_nasa_apod()),
+        ("space picture", lambda txt: _handle_nasa_apod()),
+        ("nasa", lambda txt: _handle_nasa_apod()),
+        ("rocket launch", lambda txt: _handle_spacex_launch()),
+        ("next launch", lambda txt: _handle_spacex_launch()),
+        ("spacex", lambda txt: _handle_spacex_launch()),
+        ("space station", lambda txt: _handle_iss_location()),
+        ("iss", lambda txt: _handle_iss_location()),
+        ("astronomy", lambda txt: _handle_astronomy(txt)),
+        ("sunrise", lambda txt: _handle_astronomy(txt)),
+        ("sunset", lambda txt: _handle_astronomy(txt)),
+        ("moon", lambda txt: _handle_astronomy(txt)),
+
+        # Knowledge & Research
+        ("meaning of", lambda txt: _handle_definition(txt)),
+        ("what does", lambda txt: _handle_definition(txt) if "mean" in txt else None),
+        ("definition", lambda txt: _handle_definition(txt)),
+        ("define", lambda txt: _handle_definition(txt)),
+        ("synonym", lambda txt: _handle_synonyms(txt)),
+        ("rhyme", lambda txt: _handle_rhymes(txt)),
+        ("weather", lambda txt: _handle_weather(txt)),
+        ("temperature", lambda txt: _handle_weather(txt)),
+        ("forecast", lambda txt: _handle_weather(txt)),
+        ("tell me about", lambda txt: _handle_search(txt)),
+        ("information on", lambda txt: _handle_search(txt)),
+        ("search", lambda txt: _handle_search(txt)),
+        ("find", lambda txt: _handle_search(txt)),
+        ("look up", lambda txt: _handle_search(txt)),
+        ("what is", lambda txt: _handle_search(txt)),
+        ("who is", lambda txt: _handle_search(txt)),
+
+        # Entertainment
+        ("make me laugh", lambda txt: _handle_joke()),
+        ("joke", lambda txt: _handle_joke()),
+        ("funny", lambda txt: _handle_joke()),
+        ("inspiration", lambda txt: _handle_quote()),
+        ("motivation", lambda txt: _handle_quote()),
+        ("quote", lambda txt: _handle_quote()),
+        ("cat fact", lambda txt: _handle_cat_fact()),
+        ("dog fact", lambda txt: _handle_dog_fact()),
+        ("fact", lambda txt: _handle_useless_fact()),
+        ("what should i do", lambda txt: _handle_bored_activity()),
+        ("bored", lambda txt: _handle_bored_activity()),
+        ("help me", lambda txt: _handle_advice()),
+        ("advice", lambda txt: _handle_advice()),
+
+        # Crypto & Finance
+        ("exchange rate", lambda txt: _handle_exchange_rate(txt)),
+        ("price of", lambda txt: _handle_crypto(txt) if any(c in txt for c in ["bitcoin", "ethereum", "doge", "crypto"]) else None),
+        ("bitcoin", lambda txt: _handle_crypto("bitcoin")),
+        ("btc", lambda txt: _handle_crypto("bitcoin")),
+        ("ethereum", lambda txt: _handle_crypto("ethereum")),
+        ("eth", lambda txt: _handle_crypto("ethereum")),
+        ("dogecoin", lambda txt: _handle_crypto("dogecoin")),
+        ("doge", lambda txt: _handle_crypto("dogecoin")),
+        ("crypto", lambda txt: _handle_crypto(txt)),
+        ("convert", lambda txt: _handle_exchange_rate(txt)),
+        ("usd to", lambda txt: _handle_exchange_rate(txt)),
+
+        # News & Tech
+        ("hacker news", lambda txt: _handle_hacker_news()),
+        ("hn", lambda txt: _handle_hacker_news()),
+        ("dev.to", lambda txt: _handle_dev_to()),
+        ("github", lambda txt: _handle_github(txt)),
+        ("npm", lambda txt: _handle_npm(txt)),
+        ("pypi", lambda txt: _handle_pypi(txt)),
+        ("pip package", lambda txt: _handle_pypi(txt)),
 
         # Utility
-        "my ip": lambda txt: _handle_ip_info(txt),
-        "what's my ip": lambda txt: _handle_ip_info(txt),
-        "ip address": lambda txt: _handle_ip_info(txt),
-        "validate email": lambda txt: _handle_email_validation(txt),
-        "check email": lambda txt: _handle_email_validation(txt),
-        "shorten": lambda txt: _handle_shorten_url(txt),
-        "qr code": lambda txt: _handle_qr_code(txt),
-        "time in": lambda txt: _handle_timezone(txt),
-        "what time": lambda txt: _handle_timezone(txt),
-        "timezone": lambda txt: _handle_timezone(txt),
-        "holiday": lambda txt: _handle_holidays(txt),
-        "public holiday": lambda txt: _handle_holidays(txt),
-        "what can you do": lambda txt: _handle_what_can_you_do(),
-        "capabilities": lambda txt: _handle_what_can_you_do(),
-        "skills": lambda txt: _handle_what_can_you_do(),
-        "what do you know": lambda txt: _handle_what_can_you_do(),
-        "help me understand": lambda txt: _handle_what_can_you_do(),
-
-        # Web Interaction
-        "google": lambda txt: _handle_web_search_direct(txt),
-        "search for": lambda txt: _handle_web_search_direct(txt),
-        "search the web": lambda txt: _handle_web_search_direct(txt),
-        "look up on google": lambda txt: _handle_web_search_direct(txt),
-        "browse": lambda txt: _handle_browse_website(txt),
-        "go to": lambda txt: _handle_browse_website(txt),
-        "open website": lambda txt: _handle_browse_website(txt),
-        "visit": lambda txt: _handle_browse_website(txt),
-        "navigate to": lambda txt: _handle_browse_website(txt),
-        "fill form": lambda txt: _handle_fill_form(txt),
-        "submit form": lambda txt: _handle_fill_form(txt),
+        ("what's my ip", lambda txt: _handle_ip_info(txt)),
+        ("ip address", lambda txt: _handle_ip_info(txt)),
+        ("my ip", lambda txt: _handle_ip_info(txt)),
+        ("validate email", lambda txt: _handle_email_validation(txt)),
+        ("check email", lambda txt: _handle_email_validation(txt)),
+        ("shorten", lambda txt: _handle_shorten_url(txt)),
+        ("qr code", lambda txt: _handle_qr_code(txt)),
+        ("time in", lambda txt: _handle_timezone(txt)),
+        ("what time", lambda txt: _handle_timezone(txt)),
+        ("timezone", lambda txt: _handle_timezone(txt)),
+        ("public holiday", lambda txt: _handle_holidays(txt)),
+        ("holiday", lambda txt: _handle_holidays(txt)),
+        ("what can you do", lambda txt: _handle_what_can_you_do()),
+        ("capabilities", lambda txt: _handle_what_can_you_do()),
+        ("skills", lambda txt: _handle_what_can_you_do()),
+        ("what do you know", lambda txt: _handle_what_can_you_do()),
+        ("help me understand", lambda txt: _handle_what_can_you_do()),
 
         # Media Search
-        "movie": lambda txt: _handle_movie_info(txt),
-        "film": lambda txt: _handle_movie_info(txt),
-        "book": lambda txt: _handle_book_info(txt),
-        "novel": lambda txt: _handle_book_info(txt),
-        "pokemon": lambda txt: _handle_pokemon(txt),
-        "pokémon": lambda txt: _handle_pokemon(txt),
+        ("movie", lambda txt: _handle_movie_info(txt)),
+        ("film", lambda txt: _handle_movie_info(txt)),
+        ("book", lambda txt: _handle_book_info(txt)),
+        ("novel", lambda txt: _handle_book_info(txt)),
+        ("pokemon", lambda txt: _handle_pokemon(txt)),
+        ("pokémon", lambda txt: _handle_pokemon(txt)),
 
         # Food & Recipes
-        "recipe": lambda txt: _handle_recipe(txt),
-        "how to make": lambda txt: _handle_recipe(txt),
-        "how do i make": lambda txt: _handle_recipe(txt),
-        "how to cook": lambda txt: _handle_recipe(txt),
-        "how to bake": lambda txt: _handle_recipe(txt),
-        "cook": lambda txt: _handle_recipe(txt),
+        ("how do i make", lambda txt: _handle_recipe(txt)),
+        ("how to make", lambda txt: _handle_recipe(txt)),
+        ("how to cook", lambda txt: _handle_recipe(txt)),
+        ("how to bake", lambda txt: _handle_recipe(txt)),
+        ("recipe", lambda txt: _handle_recipe(txt)),
+        ("cook", lambda txt: _handle_recipe(txt)),
 
         # Music & Media
-        "play music": lambda txt: _handle_play_music(txt),
-        "play song": lambda txt: _handle_play_music(txt),
-        "play some": lambda txt: _handle_play_music(txt),
-        "put on": lambda txt: _handle_play_music(txt),
-        "listen to": lambda txt: _handle_play_music(txt),
-        "pause music": lambda txt: _handle_play_music(txt),
-        "pause song": lambda txt: _handle_play_music(txt),
-        "next song": lambda txt: _handle_play_music(txt),
-        "next track": lambda txt: _handle_play_music(txt),
-        "skip this": lambda txt: _handle_play_music(txt),
-        "previous song": lambda txt: _handle_play_music(txt),
-        "spotify": lambda txt: _handle_play_music(txt) if "play" in txt.lower() else None,
+        ("pause music", lambda txt: _handle_play_music(txt)),
+        ("pause song", lambda txt: _handle_play_music(txt)),
+        ("next track", lambda txt: _handle_play_music(txt)),
+        ("next song", lambda txt: _handle_play_music(txt)),
+        ("skip this", lambda txt: _handle_play_music(txt)),
+        ("previous song", lambda txt: _handle_play_music(txt)),
+        ("play music", lambda txt: _handle_play_music(txt)),
+        ("play song", lambda txt: _handle_play_music(txt)),
+        ("play some", lambda txt: _handle_play_music(txt)),
+        ("put on", lambda txt: _handle_play_music(txt)),
+        ("listen to", lambda txt: _handle_play_music(txt)),
+        ("spotify", lambda txt: _handle_play_music(txt) if "play" in txt.lower() else None),
         
         # Contextual music guards
-        "play": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["music", "song", "spotify", "artist", "album", "track", "by "]) else None,
-        "song": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "listen", "put on", "this", "next", "previous"]) else None,
-        "music": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "listen", "put on", "some", "turn up", "turn down"]) else None,
+        ("play", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["music", "song", "spotify", "artist", "album", "track", "by "]) else None),
+        ("song", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "listen", "put on", "this", "next", "previous"]) else None),
+        ("music", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "listen", "put on", "some", "turn up", "turn down"]) else None),
 
         # Volume control
-        "volume up": lambda txt: _handle_volume("up"),
-        "volume down": lambda txt: _handle_volume("down"),
-        "increase the volume": lambda txt: _handle_volume("up"),
-        "decrease the volume": lambda txt: _handle_volume("down"),
-        "turn it up": lambda txt: _handle_volume("up"),
-        "turn it down": lambda txt: _handle_volume("down"),
-        "mute": lambda txt: _handle_volume("mute"),
-
-        # Vision Commands
-        "what do you see": lambda txt: _handle_vision_command(txt),
-        "what's on my screen": lambda txt: _handle_vision_command(txt),
-        "look at": lambda txt: _handle_vision_command(txt),
-        "read this": lambda txt: _handle_vision_command(txt),
-        "read the": lambda txt: _handle_vision_command(txt),
-        "is there an error": lambda txt: _handle_vision_command(txt),
-        "analyze the screen": lambda txt: _handle_vision_command(txt),
-        "analyze this": lambda txt: _handle_vision_command(txt),
-        "what window": lambda txt: _handle_vision_command(txt),
+        ("volume up", lambda txt: _handle_volume("up")),
+        ("volume down", lambda txt: _handle_volume("down")),
+        ("increase the volume", lambda txt: _handle_volume("up")),
+        ("decrease the volume", lambda txt: _handle_volume("down")),
+        ("turn it up", lambda txt: _handle_volume("up")),
+        ("turn it down", lambda txt: _handle_volume("down")),
+        ("mute", lambda txt: _handle_volume("mute")),
         
         # App launching
-        "open spotify": lambda txt: _handle_open_app(txt),
-        "open chrome": lambda txt: _handle_open_app(txt),
-        "launch": lambda txt: _handle_open_app(txt),
+        ("open spotify", lambda txt: _handle_open_app(txt)),
+        ("open chrome", lambda txt: _handle_open_app(txt)),
+        ("launch", lambda txt: _handle_open_app(txt)),
         
         # Window management
-        "switch to": lambda txt: _handle_window_command(txt),
-        "focus": lambda txt: _handle_window_command(txt),
-        "minimize": lambda txt: _handle_window_command(txt),
-        "maximize": lambda txt: _handle_window_command(txt),
-        "close window": lambda txt: _handle_window_command(txt),
-        "snap": lambda txt: _handle_window_command(txt),
-        "arrange": lambda txt: _handle_window_command(txt),
-        "tile": lambda txt: _handle_window_command(txt),
-        "move window": lambda txt: _handle_window_command(txt),
-        "list windows": lambda txt: _handle_window_command(txt),
-        "open windows": lambda txt: _handle_window_command(txt),
-        "show desktop": lambda txt: _handle_window_command(txt),
+        ("switch to", lambda txt: _handle_window_command(txt)),
+        ("focus", lambda txt: _handle_window_command(txt)),
+        ("minimize", lambda txt: _handle_window_command(txt)),
+        ("maximize", lambda txt: _handle_window_command(txt)),
+        ("close window", lambda txt: _handle_window_command(txt)),
+        ("snap", lambda txt: _handle_window_command(txt)),
+        ("arrange", lambda txt: _handle_window_command(txt)),
+        ("tile", lambda txt: _handle_window_command(txt)),
+        ("move window", lambda txt: _handle_window_command(txt)),
+        ("list windows", lambda txt: _handle_window_command(txt)),
+        ("open windows", lambda txt: _handle_window_command(txt)),
+        ("show desktop", lambda txt: _handle_window_command(txt)),
         
         # Catch common artist names for direct music triggers
-        "chris brown": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None,
-        "drake": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None,
-        "stonebwoy": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None,
-        "burna boy": lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None,
-    }
+        ("chris brown", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
+        ("drake", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
+        ("stonebwoy", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
+        ("burna boy", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["play", "put on", "listen"]) else None),
+    ]
 
     matched_keyword = None
     matched_handler = None
 
     import re
 
-    for keyword, handler in web_tool_keywords.items():
-        # Match whole words only
-        pattern = r'\b' + re.escape(keyword) + r'\b'
-        if re.search(pattern, user_lower):
-            matched_keyword = keyword
-            matched_handler = handler
-            print(f"[Zara] Matched keyword: '{keyword}'")
-            break
+    for keyword, handler in web_tool_keywords:
+        try:
+            pattern = r'\b' + re.escape(keyword) + r'\b'
+            if re.search(pattern, user_lower):
+                matched_keyword = keyword
+                matched_handler = handler
+                print(f"[Zara] Matched keyword: '{keyword}'")
+                break
+        except re.error:
+            if keyword in user_lower:
+                matched_keyword = keyword
+                matched_handler = handler
+                print(f"[Zara] Matched keyword (fuzzy): '{keyword}'")
+                break
 
     if matched_handler:
-        if _in_handler:
-            return _generate_llm_response(user_text)
-        
-        _in_handler = True
         try:
             print(f"[Zara] Handler: {matched_keyword}")
             result = matched_handler(user_text)
@@ -1024,50 +1044,43 @@ def generate_response(user_text: str) -> str:
             import traceback
             traceback.print_exc()
             return _generate_llm_response(user_text)
-        finally:
-            with _handler_lock:
-                _in_handler = False
 
-    # Check if this is a research query
-    research_keywords = ["search", "find", "look up",
-                         "what is", "who is", "information about"]
-    if any(kw in user_lower for kw in research_keywords):
+    # ========== Smart Router Integration ==========
+    # Centralized LLM routing for all complex queries (Bug 15)
+    try:
+        from smart_router import get_router
+        router = get_router()
+        response, endpoint = router.route(
+            user_text,
+            system_prompt=SYSTEM_PROMPT,
+            allow_cache=True,
+            allow_web_search=True
+        )
+        print(f"[Zara] Smart router used: {endpoint.value}")
+
+        # Store in memory
         try:
-            from smart_router import get_router
-            router = get_router()
-            response, endpoint = router.route(
-                user_text,
-                system_prompt=SYSTEM_PROMPT,
-                allow_cache=True,
-                allow_web_search=True
-            )
-            print(f"[Zara] Smart router used: {endpoint.value}")
+            memory_vault.store_memory(f"User: {user_text}")
+            memory_vault.store_memory(f"Zara: {response}")
+        except:
+            pass
 
-            # Store in memory
-            try:
-                memory_vault.store_memory(f"User: {user_text}")
-                memory_vault.store_memory(f"Zara: {response}")
-            except:
-                pass
+        # Process any actions in the response
+        action_match = _EXECUTE_PATTERN.search(response)
+        if action_match:
+            json_payload = action_match.group(1).strip()
+            if json_payload:
+                try:
+                    _action_executor.execute_payload(json_payload)
+                except Exception as e:
+                    print(f"[Zara Action Err]: {e}")
+            response = _visible_reply_text(response)
 
-            # Process any actions in the response
-            action_match = _EXECUTE_PATTERN.search(response)
-            if action_match:
-                json_payload = action_match.group(1).strip()
-                if json_payload:
-                    try:
-                        _action_executor.execute_payload(json_payload)
-                    except Exception as e:
-                        print(f"[Zara Action Err]: {e}")
-                response = _visible_reply_text(response)
+        return response
+    except Exception as e:
+        print(f"[Zara] Smart router failed: {e}")
 
-            return response
-        except Exception as e:
-            print(f"[Zara] Smart router failed, falling back to Groq: {e}")
-
-    # ========== End Smart Router Integration ==========
-
-    # Fall back to original Groq streaming for conversation
+    # Fall back to original Groq streaming if router fails completely
     try:
         relevant_memories = memory_vault.retrieve_memory(user_text)
     except Exception as e:
@@ -1077,15 +1090,8 @@ def generate_response(user_text: str) -> str:
     messages = _build_messages(user_text, relevant_memories)
 
     if not GROQ_API_KEY:
-        # Try Ollama fallback
-        try:
-            from smart_router import get_router
-            router = get_router()
-            response, _ = router.route(
-                user_text, SYSTEM_PROMPT, allow_cache=True)
-            return response
-        except:
-            return "GROQ_API_KEY is not set. Please add it to your .env file."
+        # Final fallback
+        return "I'm having trouble connecting to my brain. Please check your internet or API keys."
 
     payload = {
         "model": MODEL_NAME,
@@ -1268,8 +1274,13 @@ def _handle_definition(query: str) -> Optional[str]:
     try:
         from free_web_tools import get_web_tools
         tools = get_web_tools()
-        words = query.split()
-        word = words[-1] if words else "python"
+        import re
+        # Remove command words and take the remaining phrase
+        cleaned = re.sub(
+            r'\b(define|definition|meaning of|what does|mean)\b', '',
+            query, flags=re.IGNORECASE
+        ).strip().rstrip("?.")
+        word = cleaned if cleaned else query.split()[-1]
         return tools.get_word_definition(word)
     except Exception as e:
         print(f"[Zara Definition Handler] Error: {e}")
@@ -1572,18 +1583,31 @@ def _handle_cve(query: str) -> Optional[str]:
     return None
 
 
-def _handle_crypto(coin: str = "bitcoin") -> Optional[str]:
+def _handle_crypto(query: str) -> Optional[str]:
     """Get cryptocurrency price."""
     try:
         from free_web_tools import get_web_tools
         tools = get_web_tools()
-        coin_name = "bitcoin"
-        for c in ["bitcoin", "ethereum", "dogecoin", "solana", "cardano", "ripple", "polkadot"]:
-            if c in coin.lower():
-                coin_name = c
-                break
+        coin_map = {
+            "bitcoin": "bitcoin", "btc": "bitcoin",
+            "ethereum": "ethereum", "eth": "ethereum",
+            "dogecoin": "dogecoin", "doge": "dogecoin",
+            "solana": "solana", "sol": "solana",
+            "cardano": "cardano", "ada": "cardano",
+            "ripple": "ripple", "polkadot": "polkadot",
+        }
+        q = query.lower()
+        coin_name = next((v for k, v in coin_map.items() if k in q), None)
+        if not coin_name:
+            # Generic "crypto" query — return top 3
+            results = []
+            for coin in ["bitcoin", "ethereum", "solana"]:
+                r = tools.get_crypto_price(coin)
+                if r:
+                    results.append(r)
+            return "\n\n".join(results) if results else None
         return tools.get_crypto_price(coin_name)
-    except:
+    except Exception:
         return None
 
 

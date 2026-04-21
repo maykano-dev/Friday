@@ -442,7 +442,22 @@ class ActionExecutor:
 
         # ── OTHER APPS ──────────────────────────────────────────
         elif platform.system() == "Windows":
-            os.startfile(app_name)
+            try:
+                os.startfile(app_name)
+            except OSError:
+                # Robust fallback for common app names
+                app_map = {
+                    "chrome": "chrome.exe",
+                    "firefox": "firefox.exe",
+                    "notepad": "notepad.exe",
+                    "calculator": "calc.exe",
+                    "edge": "msedge.exe"
+                }
+                cmd = app_map.get(app_name, app_name)
+                try:
+                    subprocess.Popen(["cmd", "/c", "start", "", cmd], shell=True)
+                except:
+                    print(f"[Zara Action] Failed to start {app_name}")
             print(f"[Zara Action] started app: {app_name}")
         else:
             subprocess.Popen(["open" if platform.system() == "Darwin" else "xdg-open", app_name])

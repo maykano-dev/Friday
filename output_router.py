@@ -130,9 +130,6 @@ class OutputRouter:
         # Remove excessive newlines
         text = re.sub(r'\n{3,}', '\n\n', text)
 
-        # Add natural pauses
-        text = re.sub(r'([.!?])\s+', r'\1 <break time="300ms"/> ', text)
-
         return text.strip()
 
     def should_speak_code(self, code_length: int) -> bool:
