@@ -4,6 +4,9 @@ import random
 import threading
 import time
 import os
+import base64
+import io
+import ws_bridge
 
 MANUAL_INGEST_CMD = pygame.USEREVENT + 1
 
@@ -127,21 +130,51 @@ class NeuralVisualizer:
 
     def set_state(self, new_state):
         self.state = new_state.upper()
+        # Keep React/dashboard and headless orb state in sync from the canonical UI state.
+        try:
+            import ws_bridge
+            ws_bridge.set_state(self.state)
+        except Exception:
+            pass
 
     def set_subtitle_text(self, text):
         """Thread-safe: queue text to appear as a subtitle on the sphere."""
         with self._subtitle_lock:
             self._subtitle_text = str(text) if text is not None else ""
             self._text_time = time.time()
+        try:
+            import ws_bridge
+            ws_bridge.set_subtitles(zara_text=self._subtitle_text)
+        except Exception:
+            pass
 
     def set_user_text(self, text):
         with self._subtitle_lock:
             self._user_text = str(text) if text is not None else ""
             self._text_time = time.time()
+        try:
+            import ws_bridge
+            ws_bridge.set_subtitles(user_text=self._user_text)
+        except Exception:
+            pass
 
     def set_bg_task(self, text):
         with self._bg_task_lock:
             self._bg_task_text = str(text) if text is not None else ""
+        try:
+            import ws_bridge
+            ws_bridge.set_bg_task(self._bg_task_text)
+        except Exception:
+            pass
+
+    def add_context_card(self, card):
+        """Add a card to the local wing and broadcast to the dashboard."""
+        self.add_context_card(card)
+        try:
+            import ws_bridge
+            ws_bridge.broadcast_context_card(card.card_type, card.content, card.label)
+        except Exception:
+            pass
 
     def toggle_fullscreen(self, screen):
         self.is_fullscreen = not self.is_fullscreen
@@ -190,14 +223,15 @@ class NeuralVisualizer:
 
         clock = pygame.time.Clock()
 
-        # Force Windows Always On Top seamlessly
-        try:
-            import ctypes
-            hwnd = pygame.display.get_wm_info()["window"]
-            ctypes.windll.user32.SetWindowPos(
-                hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)
-        except Exception:
-            pass
+        # Optional Windows topmost mode (disabled by default for dashboard-first flow).
+        if os.getenv("ZARA_UI_TOPMOST", "0") == "1":
+            try:
+                import ctypes
+                hwnd = pygame.display.get_wm_info()["window"]
+                ctypes.windll.user32.SetWindowPos(
+                    hwnd, -1, 0, 0, 0, 0, 0x0001 | 0x0002)
+            except Exception:
+                pass
 
         BG_COLOR = (10, 12, 16)
         SUBTITLE_COLOR = (220, 235, 255)
@@ -231,11 +265,12 @@ class NeuralVisualizer:
                     self.hover_active = False
 
                     # IMMEDIATE VISUAL FEEDBACK
-                    self.context_cards.append(ContextCard(
+                    self.add_context_card(ContextCard(
                         "TEXT",
                         f"📁 Processing: {os.path.basename(event.file)}...",
                         label="File Import"
                     ))
+                    ws_bridge.broadcast_context_card("FILE", event.file, "File Import")
 
                     # Process in background thread
                     import threading
@@ -262,8 +297,9 @@ class NeuralVisualizer:
                     print(f"[UI] Text dropped: {event.text[:100]}")
                     self.target_wing_open_ratio = 1.0
                     self.hover_active = False
-                    self.context_cards.append(ContextCard(
+                    self.add_context_card(ContextCard(
                         "TEXT", event.text, label="Dropped Text"))
+                    ws_bridge.broadcast_context_card("TEXT", event.text, "Dropped Text")
                     try:
                         import memory_vault
                         memory_vault.index_data(event.text, "dropped_text")
@@ -277,7 +313,7 @@ class NeuralVisualizer:
                     clip_data = clipboard_engine.get_active_clipboard_data()
                     if clip_data:
                         if clip_data["type"] == "text":
-                            self.context_cards.append(ContextCard(
+                            self.add_context_card(ContextCard(
                                 "CODE", clip_data["content"], label="Syntax Detection"))
                             try:
                                 import memory_vault
@@ -300,7 +336,7 @@ class NeuralVisualizer:
                             py_str = pil_img.tobytes()
                             surf = pygame.image.fromstring(
                                 py_str, pil_img.size, pil_img.mode)
-                            self.context_cards.append(ContextCard(
+                            self.add_context_card(ContextCard(
                                 "IMAGE", b64, surface=surf, label="Apex Border"))
                 elif event.type == pygame.MOUSEWHEEL:
                     if self.wing_open_ratio > 0:
@@ -479,6 +515,41 @@ class NeuralVisualizer:
                 screen.blit(bg_surf, (x_pos, y_pos))
 
             self.draw_wing(screen, subtitle_font, mono_font)
+
+            # Stream the exact live orb frame to the dashboard (15 FPS), so React
+            # mirrors the same neural-core render and state transitions as pygame.
+            now = time.time()
+            if now - getattr(self, "_last_orb_stream_ts", 0.0) >= (1.0 / 15.0):
+                try:
+                    target_center_x = (self.width * 0.7) / 2
+                    base_center_x = self.width / 2
+                    actual_center_x = base_center_x - \
+                        (base_center_x - target_center_x) * self.wing_open_ratio
+                    box = int(max(220, min(self.width, self.height) * 0.72))
+                    left = max(0, int(actual_center_x - box / 2))
+                    top = max(0, int(self.height / 2 - box / 2))
+                    right = min(self.width, left + box)
+                    bottom = min(self.height, top + box)
+                    if right - left > 8 and bottom - top > 8:
+                        orb_surface = screen.subsurface(
+                            pygame.Rect(left, top, right - left, bottom - top)
+                        ).copy()
+                        raw = pygame.image.tostring(orb_surface, "RGB")
+                        try:
+                            from PIL import Image as PILImage
+                            img = PILImage.frombytes(
+                                "RGB", (orb_surface.get_width(), orb_surface.get_height()), raw
+                            )
+                            buf = io.BytesIO()
+                            img.save(buf, format="PNG", optimize=True)
+                            frame_b64 = base64.b64encode(buf.getvalue()).decode()
+                            import ws_bridge
+                            ws_bridge.push_orb_frame(frame_b64)
+                        except Exception:
+                            pass
+                    self._last_orb_stream_ts = now
+                except Exception:
+                    pass
 
             pygame.display.flip()
             clock.tick(60)

@@ -193,6 +193,20 @@ class ActionExecutor:
                 pe = presence_engine.PresenceEngine()
                 sound = payload.get("sound", "rain")
                 pe.enter_ambient_mode(sound)
+            elif action == "focus_window":
+                self._focus_window(payload)
+            elif action == "complex_task":
+                self._handle_complex_task_dispatch(payload)
+            elif action == "ingest_folder":
+                self._ingest_folder(payload)
+            elif action == "get_hardware_diagnostics":
+                self._get_hardware_diagnostics(payload)
+            elif action == "start_recording":
+                self._start_recording(payload)
+            elif action == "stop_recording":
+                self._stop_recording(payload)
+            elif action == "setup_workspace":
+                self._setup_workspace(payload)
             else:
                 print(f"[Zara Action] unknown action: {action!r}")
         except Exception as e:
@@ -308,29 +322,29 @@ class ActionExecutor:
             return
 
         print(f"[Zara Action] script exit={result.returncode}")
-        if result.stdout:
-            print(f"[Zara Action] stdout: {result.stdout.strip()}")
-        if result.stderr:
-            print(f"[Zara Action] stderr: {result.stderr.strip()}")
 
         if result.returncode != 0:
             error_msg = result.stderr.strip() or result.stdout.strip()
+            cls.last_run_code_bug = error_msg
+            print(f"[Auto-Debug] Bug detected: {cls.last_run_code_bug}")
+
+            # AUTOMATIC TRIGGER: Send the error back to the core for a fix
             import zara_core
             zara_core.generate_response(
-                f"The code failed with this error: {error_msg}. Analyze and provide a corrected <EXECUTE> block."
+                f"INTERNAL_ERROR: The code you just ran failed with: {cls.last_run_code_bug}. "
+                "Analyze the error and provide a corrected <EXECUTE> block immediately."
             )
+        else:
+            cls.last_run_code_bug = None
+            cls._speak_confirmation("Script executed successfully.")
 
     @classmethod
     def verified_execute(cls, payload: Dict[str, Any]) -> None:
         attempt = payload.get("attempt", 1)
         if attempt > 3:
-            print(f"[Zara Action] verified_execute failed after 3 attempts.")
+            print("[Auto-Debug] Critical failure after 3 attempts.")
             import zara_core
-            import main
-            if main.ui:
-                main.ui.set_bg_task("")
-            zara_core.generate_response(
-                "The code failed 3 times in the sandbox. Tell the user it failed.")
+            zara_core.generate_response("The task failed 3 times. Please advise on how to proceed, Sir.")
             return
 
         code = payload.get("code")
@@ -373,19 +387,16 @@ class ActionExecutor:
                 memory_vault.log_coding_task(code, "Success")
                 if main.ui:
                     main.ui.set_bg_task("")
-            else:
-                print(
-                    f"[Zara Action] verified_execute failed with exit={result.returncode}")
-                error_msg = result.stderr.strip() if result.stderr else "Unknown Error"
-                print(f"[Zara Action] output: {error_msg}")
-                memory_vault.log_coding_task(code, "Failed")
-
+            if result.returncode != 0:
+                error_msg = result.stderr.strip() or "Unknown execution error."
+                print(f"[Auto-Debug] Attempt {attempt} failed: {error_msg}")
+                
+                # Recursive fix: Send the error back to the brain for correction
+                import zara_core
                 prompt = (
-                    f"Code execution failed. Error: {error_msg}. Analyze the stack trace, identify the logic error, and provide a corrected <EXECUTE> block. "
-                    f"IMPORTANT: You must include '\"attempt\": {attempt + 1}' inside your JSON payload."
+                    f"INTERNAL_RETRY: Your code failed with this error: {error_msg}. "
+                    f"Rewrite the script to fix the bug. This is attempt {attempt + 1}."
                 )
-                if main.ui:
-                    main.ui.set_bg_task("")
                 zara_core.generate_response(prompt)
 
         except subprocess.TimeoutExpired as e:
@@ -394,7 +405,7 @@ class ActionExecutor:
             memory_vault.log_coding_task(code, "Failed")
             prompt = (
                 f"Code execution failed. Error: {error_msg}. Analyze the stack trace, identify the logic error, and provide a corrected <EXECUTE> block. "
-                f"IMPORTANT: You must include '\"attempt\": {attempt + 1}' inside your JSON payload."
+                f"IMPORTANT: You must include '"attempt": {attempt + 1}' inside your JSON payload."
             )
             if main.ui:
                 main.ui.set_bg_task("")
@@ -412,12 +423,20 @@ class ActionExecutor:
         # ── SPOTIFY ─────────────────────────────────────────────
         if "spotify" in app_name:
             if search_query:
-                # Use vision-guided search and play
-                cls.spotify_search_and_play_with_vision(search_query)
+                # Use vision-guided search and play, with URI fallback for robust execution.
+                try:
+                    cls.spotify_search_and_play_with_vision(search_query)
+                except Exception as e:
+                    print(f"[Zara Action] Spotify vision flow failed: {e}")
+                    cls.spotify_open_query(search_query)
             elif action == "play_recommended":
-                cls.spotify_play_recommended()
+                try:
+                    cls.spotify_play_recommended()
+                except Exception as e:
+                    print(f"[Zara Action] Spotify recommended flow failed: {e}")
+                    cls.spotify_open_query("")
             else:
-                os.startfile("spotify:")
+                cls.spotify_open_query("")
                 state.set_media_playing(True)
                 print("[Zara Action] Opened Spotify")
 
@@ -462,6 +481,72 @@ class ActionExecutor:
         else:
             subprocess.Popen(["open" if platform.system() == "Darwin" else "xdg-open", app_name])
             print(f"[Zara Action] started app: {app_name}")
+
+    @staticmethod
+    def spotify_open_query(query: str) -> bool:
+        """Open Spotify to a query URI without relying on UI automation focus."""
+        import webbrowser
+        from urllib.parse import quote_plus
+        query = (query or "").strip()
+        try:
+            uri = f"spotify:search:{quote_plus(query)}" if query else "spotify:"
+            opened = False
+            try:
+                if platform.system() == "Windows":
+                    os.startfile(uri)
+                    opened = True
+            except Exception:
+                opened = False
+
+            if not opened:
+                opened = bool(webbrowser.open(uri))
+
+            # Last-resort fallback to the web player if custom URI handlers fail.
+            if not opened and query:
+                web_url = f"https://open.spotify.com/search/{quote_plus(query)}"
+                opened = bool(webbrowser.open(web_url))
+                if opened:
+                    print(f"[Zara Action] Opened web fallback: {web_url}")
+
+            if not opened and not query:
+                opened = bool(webbrowser.open("https://open.spotify.com/"))
+
+            state.set_media_playing(True)
+            print(f"[Zara Action] Opened URI: {uri}")
+            return bool(opened)
+        except Exception as e:
+            print(f"[Zara Action] Failed to open Spotify URI: {e}")
+            return False
+
+    @staticmethod
+    def _press_playpause() -> bool:
+        """Best-effort global play/pause media key press."""
+        try:
+            if platform.system() == "Windows":
+                import ctypes
+                VK_MEDIA_PLAY_PAUSE = 0xB3
+                KEYEVENTF_KEYUP = 0x0002
+                ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0)
+                time.sleep(0.03)
+                ctypes.windll.user32.keybd_event(VK_MEDIA_PLAY_PAUSE, 0, KEYEVENTF_KEYUP, 0)
+                print("[Zara Action] Sent global play/pause media key")
+                return True
+        except Exception as e:
+            print(f"[Zara Action] Media key via ctypes failed: {e}")
+
+        try:
+            import pyautogui
+            prev_failsafe = getattr(pyautogui, "FAILSAFE", True)
+            pyautogui.FAILSAFE = False
+            try:
+                pyautogui.press("playpause")
+                print("[Zara Action] Sent play/pause via pyautogui")
+                return True
+            finally:
+                pyautogui.FAILSAFE = prev_failsafe
+        except Exception as e:
+            print(f"[Zara Action] Media key via pyautogui failed: {e}")
+            return False
 
     @classmethod
     def _web_scrape(cls, payload: Dict[str, Any]) -> None:
@@ -827,15 +912,11 @@ Return purely valid JSON without markdown tags."""
     def spotify_search_and_play_with_vision(cls, query: str):
         """Use vision to verify and click play."""
         from zara_eyes import get_eyes
-        from urllib.parse import quote_plus
-        import webbrowser
         import pyautogui
         import time
 
-        # Open Spotify search
-        encoded = quote_plus(query)
-        spotify_uri = f"spotify:search:{encoded}"
-        webbrowser.open(spotify_uri)
+        # Always open via URI first so an action occurs even if UI automation fails.
+        cls.spotify_open_query(query)
 
         time.sleep(3)
 
@@ -852,9 +933,18 @@ Return purely valid JSON without markdown tags."""
                 screen_width, screen_height = pyautogui.size()
                 click_x = int(screen_width * 0.15)
                 click_y = int(screen_height * 0.35)
-
-                pyautogui.doubleClick(click_x, click_y)
-                print("[Zara Action] Vision-guided click on first result")
+                prev_failsafe = getattr(pyautogui, "FAILSAFE", True)
+                pyautogui.FAILSAFE = False
+                try:
+                    pyautogui.doubleClick(click_x, click_y)
+                    cls._press_playpause()
+                    state.set_media_playing(True)
+                    print("[Zara Action] Vision-guided click on first result")
+                except Exception as e:
+                    print(f"[Zara Action] Vision-guided click failed: {e}")
+                    cls.spotify_search_and_play(query)
+                finally:
+                    pyautogui.FAILSAFE = prev_failsafe
             else:
                 # Fallback to standard automation if vision is confused
                 cls.spotify_search_and_play(query)
@@ -866,78 +956,311 @@ Return purely valid JSON without markdown tags."""
         """Search and play using simple, reliable keystrokes."""
         import pyautogui
         import time
-        import os
-        
+
         print(f"[Zara Action] Spotify: searching '{query}'")
         
-        # Ensure Spotify is focused
+        # Ensure Spotify is open; URI launch doubles as robust fallback.
         if not is_app_running("spotify"):
-            os.startfile("spotify:")
+            cls.spotify_open_query("")
             time.sleep(4)  # Wait for Spotify to fully load
         else:
-            focus_app("spotify")
+            if not focus_app("spotify"):
+                # Foreground focus can fail on Windows privilege boundaries.
+                # Keep behavior non-blocking by opening a direct URI and returning.
+                cls.spotify_open_query(query)
+                cls._press_playpause()
+                state.set_media_playing(True)
+                return
             time.sleep(1)
         
         # METHOD 1: Use Spotify's built-in keyboard shortcut to open search
-        pyautogui.hotkey("ctrl", "k")
-        time.sleep(0.8)
-        
-        # Clear existing text
-        pyautogui.hotkey("ctrl", "a")
-        time.sleep(0.2)
-        
-        # Type the query using clipboard for Unicode safety
+        prev_failsafe = getattr(pyautogui, "FAILSAFE", True)
+        pyautogui.FAILSAFE = False
         try:
-            import pyperclip
-            pyperclip.copy(query)
-            time.sleep(0.1)
-            pyautogui.hotkey("ctrl", "v")
-        except ImportError:
-            # Fallback: type char by char slowly
-            for char in query:
-                try:
-                    pyautogui.write(char, interval=0.05)
-                except:
-                    pass
-        time.sleep(0.6)
-        
-        # Press Enter to search
-        pyautogui.press("enter")
-        time.sleep(2.0)  # Wait for results
-        
-        # Tab to first track result and play it
-        # Spotify search results: Tabx3 reaches first song in most layouts
-        for _ in range(3):
-            pyautogui.press("tab")
-            time.sleep(0.15)
-        pyautogui.press("enter")
-        time.sleep(0.5)
-        
+            if not query:
+                cls._press_playpause()
+                state.set_media_playing(True)
+                print("[Zara Action] Spotify: toggled play/pause")
+                return
+
+            pyautogui.hotkey("ctrl", "k")
+            time.sleep(0.8)
+
+            # Clear existing text
+            pyautogui.hotkey("ctrl", "a")
+            time.sleep(0.2)
+
+            # Type the query using clipboard for Unicode safety
+            try:
+                import pyperclip
+                pyperclip.copy(query)
+                time.sleep(0.1)
+                pyautogui.hotkey("ctrl", "v")
+            except ImportError:
+                # Fallback: type char by char slowly
+                for char in query:
+                    try:
+                        pyautogui.write(char, interval=0.05)
+                    except Exception:
+                        pass
+            time.sleep(0.6)
+
+            # Press Enter to search
+            pyautogui.press("enter")
+            time.sleep(2.0)  # Wait for results
+
+            # Try to play via media keys - most reliable fallback
+            # (In a future update, we will use zara_eyes here for visual targeting)
+            cls._press_playpause()
+            time.sleep(0.5)
+            
+            # If that fails to trigger "Playing" state, we fallback to a single Enter
+            # which often works if the search auto-focuses the first result.
+            pyautogui.press("enter")
+            time.sleep(0.5)
+        except Exception as e:
+            print(f"[Zara Action] Spotify keystroke flow failed: {e}")
+            cls.spotify_open_query(query)
+            cls._press_playpause()
+            state.set_media_playing(True)
+            return
+        finally:
+            pyautogui.FAILSAFE = prev_failsafe
+
         state.set_media_playing(True)
         print(f"[Zara Action] Spotify: playback command sent for '{query}'")
 
     @classmethod
     def spotify_play_recommended(cls):
         """Play user's Discover Weekly or Liked Songs."""
-        import pyautogui
         import time
-        import os
 
-        if not is_app_running("spotify"):
-            os.startfile("spotify:")
-            time.sleep(3)
-        else:
+        # Open app first so a visible action always happens.
+        cls.spotify_open_query("")
+        time.sleep(1.8)
+
+        # Try opening Liked Songs directly where supported.
+        try:
+            collection_uri = "spotify:collection:tracks"
+            opened_collection = False
+            if platform.system() == "Windows":
+                try:
+                    os.startfile(collection_uri)
+                    opened_collection = True
+                except Exception:
+                    opened_collection = False
+            if not opened_collection:
+                import webbrowser
+                opened_collection = bool(webbrowser.open(collection_uri))
+            if opened_collection:
+                time.sleep(1.2)
+        except Exception as e:
+            print(f"[Zara Action] Could not open liked songs URI: {e}")
+
+        # Best-effort foreground focus (non-fatal).
+        try:
             focus_app("spotify")
-            time.sleep(0.5)
+        except Exception:
+            pass
 
-        # Click on "Liked Songs" or press Ctrl+L and type "liked"
-        pyautogui.hotkey("ctrl", "l")
-        time.sleep(0.3)
-        pyautogui.write("liked songs")
-        time.sleep(0.5)
-        pyautogui.press("enter")
-        time.sleep(1)
-        pyautogui.press("enter")  # Play
+        # Ensure playback starts, even if UI automation is unavailable.
+        cls._press_playpause()
 
         state.set_media_playing(True)
-        print("[Zara Action] Playing Liked Songs")
+        print("[Zara Action] Playing recommended Spotify content")
+
+    @classmethod
+    def _focus_window(cls, payload: Dict[str, Any]) -> None:
+        """Brings a specific window to the foreground and maximizes it."""
+        title = payload.get("title")
+        if not title:
+            return
+
+        try:
+            # Use the more robust win32-based helper if available
+            success = focus_app(title)
+            if not success:
+                # Fallback to pygetwindow if win32 fails
+                import pygetwindow as gw
+                wins = gw.getWindowsWithTitle(title)
+                if wins:
+                    win = wins[0]
+                    if win.isMinimized:
+                        win.restore()
+                    win.activate()
+                    success = True
+
+            if success:
+                cls._speak_confirmation(f"Bringing {title} to focus.")
+                print(f"[Zara Action] Focused window: {title}")
+        except Exception as e:
+            print(f"[Zara Action] Failed to focus window '{title}': {e}")
+
+    @classmethod
+    def _handle_complex_task_dispatch(cls, payload: Dict[str, Any]) -> None:
+        """Redirects a complex request to the agent orchestrator."""
+        task = payload.get("task")
+        if not task:
+            return
+
+        import zara_core
+        import local_voice
+        local_voice.speak("Sir, I'm coordinating with my specialized sub-agents to handle this request.")
+        
+        # This will run the multi-agent workflow
+        result = zara_core._handle_complex_task(task)
+        
+        # Speak or display the result
+        if result:
+            print(f"[Orchestrator] Result: {result}")
+            # The brain will naturally follow up or we can force a response here
+            zara_core.generate_response(f"The agent team has completed the task: {task}. Results: {result[:500]}. Summarize this for the user.")
+    def _ingest_folder(self, payload: Dict[str, Any]) -> None:
+        """Trigger deep folder ingestion via the Scholar agent."""
+        path = payload.get("path")
+        if not path:
+            return
+        
+        # Expand user path
+        path = os.path.expanduser(path)
+        
+        try:
+            import memory_vault
+            import threading
+            # Run in a separate thread because it can be slow
+            threading.Thread(target=memory_vault.ingest_directory, args=(path,), daemon=True).start()
+            self._speak_confirmation(f"I've started the Scholar ingestion for that folder, Sir. It will run in the background.")
+        except Exception as e:
+            print(f"[Zara Action] Ingest folder failed: {e}")
+
+    def _get_hardware_diagnostics(self, payload: Dict[str, Any]) -> None:
+        """Poll system sensors and broadcast to dashboard."""
+        try:
+            import psutil
+            import ws_bridge
+            
+            cpu = psutil.cpu_percent()
+            ram = psutil.virtual_memory().percent
+            
+            # Temps (sensor support varies)
+            temp = 0
+            try:
+                temps = psutil.sensors_temperatures()
+                if temps:
+                    # Try to find a core temp
+                    for name, entries in temps.items():
+                        if entries:
+                            temp = entries[0].current
+                            break
+            except:
+                pass
+            
+            # Broadcast to dashboard
+            ws_bridge.set_metrics(cpu=cpu, ram=ram, gpu=temp, disk=psutil.disk_usage('/').percent)
+            
+            msg = f"Sir, system systems are stable. CPU is at {int(cpu)} percent, and RAM usage is at {int(ram)} percent."
+            if temp > 0:
+                msg += f" Core temperature is {int(temp)} degrees."
+            
+            self._speak_confirmation(msg)
+        except Exception as e:
+            print(f"[Zara Action] Hardware diagnostics failed: {e}")
+
+    def _start_recording(self, payload: Dict[str, Any]) -> None:
+        """Start capturing user interactions."""
+        try:
+            from zara_eyes import get_action_logger
+            get_action_logger().start()
+            self._speak_confirmation("I'm recording your workflow now, Sir. Just do your thing.")
+        except Exception as e:
+            print(f"[Zara Action] Start recording failed: {e}")
+
+    def _stop_recording(self, payload: Dict[str, Any]) -> None:
+        """Stop capturing and synthesize a macro script."""
+        try:
+            from zara_eyes import get_action_logger
+            logs = get_action_logger().stop()
+            
+            if not logs:
+                self._speak_confirmation("I didn't capture any actions, Sir.")
+                return
+            
+            self._speak_confirmation("Recording stopped. I'm synthesizing the automation script now.")
+            
+            # Use the CODER agent to turn logs into a script
+            import agent_orchestrator
+            import zara_core
+            
+            orchestrator = agent_orchestrator.get_orchestrator(llm_callback=zara_core.generate_response)
+            log_text = json.dumps(logs, indent=2)
+            
+            task = agent_orchestrator.AgentTask(
+                id=f"macro_{int(time.time())}",
+                role=agent_orchestrator.AgentRole.CODER,
+                instruction="Synthesize these recorded mouse actions into a clean, reusable Python script using pyautogui. Make it robust.",
+                context=f"Recorded Actions:\n{log_text}"
+            )
+            
+            def synthesis_worker():
+                orchestrator.start()
+                script = orchestrator.execute_workflow(
+                    agent_orchestrator.Workflow(
+                        name="Macro Synthesis",
+                        description="Creating a macro from recorded actions",
+                        tasks=[task]
+                    )
+                )
+                
+                if script:
+                    # Save to a macros folder
+                    macro_dir = os.path.join(os.getcwd(), "vault", "macros")
+                    os.makedirs(macro_dir, exist_ok=True)
+                    filename = f"macro_{int(time.time())}.py"
+                    filepath = os.path.join(macro_dir, filename)
+                    
+                    # Clean up triple backticks if the model included them
+                    clean_script = script.replace("```python", "").replace("```", "").strip()
+                    
+                    with open(filepath, "w") as f:
+                        f.write(clean_script)
+                    
+                    print(f"[Macro Agent] Script saved to {filepath}")
+                    zara_core.generate_response(f"Sir, I've finished synthesizing the macro. I saved it as {filename} in your vault.")
+
+            threading.Thread(target=synthesis_worker, daemon=True).start()
+            
+        except Exception as e:
+            print(f"[Zara Action] Stop recording failed: {e}")
+
+    def _setup_workspace(self, payload: Dict[str, Any]) -> None:
+        """Launches a suite of apps, sets ambient audio, and arranges windows."""
+        mode = payload.get("mode", "coding")
+        workspaces = {
+            "coding": {"apps": ["code", "spotify"], "ambient": "white-noise", "url": "https://github.com"},
+            "logistics": {"apps": ["chrome", "excel"], "ambient": "office", "url": "https://1688.com"},
+            "study": {"apps": ["chrome", "notepad"], "ambient": "rain", "url": "https://arxiv.org"}
+        }
+        ws = workspaces.get(mode, workspaces["coding"])
+        
+        self._speak_confirmation(f"Initializing {mode} workspace, Sir. Reconfiguring systems now.")
+        
+        # 1. Launch apps
+        for app in ws["apps"]:
+            self._start_app({"app_name": app})
+        
+        # 2. Set Ambience via PresenceEngine
+        try:
+            from presence_engine import PresenceEngine
+            pe = PresenceEngine()
+            pe.enter_ambient_mode(ws["ambient"])
+        except Exception as e:
+            print(f"[Workspace] Ambient failed: {e}")
+            
+        # 3. Update Dashboard UI Mode
+        import ws_bridge
+        ws_bridge.set_mode(mode)
+        
+        # 4. Open primary URL if applicable
+        if "url" in ws:
+            import webbrowser
+            webbrowser.open(ws["url"])

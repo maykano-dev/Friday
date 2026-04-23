@@ -5,38 +5,51 @@
   "volume_level": 60,
   "preferred_genres": [],
   "favorite_artists": [
-    "Chris Brown"
+    "Chris Brown",
+    "stoneboy"
   ],
   "recently_played": [
     {
+      "song": "",
+      "artist": "stoneboy"
+    },
+    {
+      "song": "",
+      "artist": "stoneboy"
+    },
+    {
+      "song": "",
+      "artist": "stoneboy"
+    },
+    {
+      "song": "",
+      "artist": "stoneboy"
+    },
+    {
+      "song": "",
+      "artist": "stoneboy"
+    },
+    {
+      "song": "here, and music",
+      "artist": ""
+    },
+    {
+      "song": "here, and music",
+      "artist": ""
+    },
+    {
+      "song": "here, and music",
+      "artist": ""
+    },
+    {
+      "song": "",
+      "artist": "stoneboy"
+    },
+    {
       "song": "e music on spotify",
-      "artist": ""
-    },
-    {
-      "song": "music on spotify music on spotify",
-      "artist": ""
-    },
-    {
-      "song": "zara music on spotify",
-      "artist": ""
-    },
-    {
-      "song": "Stonebwoy on spotify",
-      "artist": ""
-    },
-    {
-      "song": "these are the music on spotify",
-      "artist": ""
-    },
-    {
-      "song": "freaky friday",
-      "artist": "Chris Brown"
-    },
-    {
-      "song": "goodbye Chris Brown",
       "artist": ""
     }
   ],
   "last_used_app": null,
-  "user_gender": "male"
+  "user_gender": "female"
 }

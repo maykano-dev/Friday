@@ -44,31 +44,42 @@ MAX_TURNS = 6
 MAX_MESSAGES = MAX_TURNS * 2
 
 def get_dynamic_system_prompt() -> str:
-    """Build system prompt with correct honorific for detected gender."""
-    try:
-        from gender_detector import get_honorific
-        honorific = get_honorific()
-    except Exception:
-        honorific = "Sir"
-    
+    import json
+    # Load persistent honorific from file
+    honorific = "Sir" 
+    if os.path.exists("zara_prefs.json"):
+        try:
+            with open("zara_prefs.json", "r") as f:
+                honorific = json.load(f).get("honorific", "Sir")
+        except: pass
+
     return (
-        f"You are Zara, an advanced AI assistant and autonomous agent built at zara.ai. "
-        f"The user is SPEAKING to you. You are sharp, warm, efficient, and always one step ahead. "
-        f"Address this user as '{honorific}'. "
-        f"You never say 'I cannot do that' — you find a way or offer the closest alternative. "
-        f"You never ask unnecessary questions. You manage multiple tasks simultaneously.\n\n"
-        f"CRITICAL RULES:\n"
-        f"1. Keep responses CONCISE - 1 to 3 short sentences maximum.\n"
-        f"2. DO NOT output <EXECUTE> blocks for simple actions like opening apps, playing music, "
-        f"creating folders, writing files, or searching the web.\n"
-        f"3. ONLY use <EXECUTE> for complex multi-step tasks like browse_web, fill_form, web_research, "
-        f"or verified_execute.\n"
-        f"4. If input is unclear, say 'I didn't catch that. Could you repeat it?' and STOP.\n"
-        f"5. NEVER mention typing, keyboards, or screens.\n\n"
-        f"Be warm but BRIEF. One to three sentences is perfect."
+        f"You are Zara, the ultimate autonomous assistant. Address the user as '{honorific}'. "
+        "You are sharp, efficient, and manage multiple complex tasks simultaneously. "
+        "You have full system access and never offer excuses — only solutions."
     )
 
-SYSTEM_PROMPT = ""  # Deprecated, use get_dynamic_system_prompt()
+
+def _handle_complex_task(task_description: str):
+    """Spawns an agent team to handle a high-complexity request."""
+    import agent_orchestrator
+    # Initialize the orchestrator with Zara's own LLM logic as the brain
+    orchestrator = agent_orchestrator.get_orchestrator(llm_callback=generate_response)
+    if orchestrator:
+        orchestrator.start()
+        
+        # Create a specialized coding team (Planner -> Coder -> Reviewer)
+        workflow = orchestrator.create_coding_team(task_description)
+        result = orchestrator.execute_workflow(workflow)
+        
+        return result
+    return "Orchestrator unavailable."
+
+def get_system_prompt():
+    """Alias for user's requested function name."""
+    return get_dynamic_system_prompt()
+
+# SYSTEM_PROMPT is deprecated, use get_dynamic_system_prompt() instead.
 
 ACTION_PROTOCOL_PROMPT = (
     "🎯 ZARA CAPABILITIES MANIFEST 🎯\n"
@@ -86,6 +97,7 @@ ACTION_PROTOCOL_PROMPT = (
     "- Browse website: <EXECUTE>{\"action\": \"browse_web\", \"url\": \"https://example.com\", \"task\": \"find pricing\"}</EXECUTE>\n"
     "- Fill form: <EXECUTE>{\"action\": \"fill_form\", \"fields\": {\"name\": \"John\", \"email\": \"john@example.com\"}, \"submit\": true}</EXECUTE>\n"
     "- Click element: <EXECUTE>{\"action\": \"click_element\", \"text\": \"Sign In\"}</EXECUTE>\n"
+    "- Complex Task (Multi-Agent): <EXECUTE>{\"action\": \"complex_task\", \"task\": \"Build a full data scraper for stock prices\"}</EXECUTE>\n"
 
     "=== KNOWLEDGE & RESEARCH (just answer conversationally) ===\n"
     "- Weather for any city (say: 'What's the weather in Tokyo?')\n"
@@ -331,7 +343,7 @@ def _visible_reply_text(raw_text: str) -> str:
 def _build_system_boot_messages(user_text: str) -> List[Dict[str, str]]:
     """Build a minimal hidden boot prompt without chat or memory side effects."""
     return [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": get_dynamic_system_prompt()},
         {"role": "system", "content": SYSTEM_BOOT_PROMPT},
         {"role": "user", "content": user_text},
     ]
@@ -436,42 +448,37 @@ def _generate_response_impl(user_text: str) -> str:
         return "I've saved that to my memory, Sir."
 
     # ── 3. Quick Keyword-based Handler Bypass ──
-    # Execute handlers only if matched, under lock
+    # Try ALL matching handlers in priority order until one returns a response.
+    # This prevents a loose match (returning None) from blocking stronger later matches.
     user_lower = user_text.lower()
-    matched_handler = None
-    matched_keyword = None
+    if _handler_active.is_set():
+        return _call_groq_streaming(user_text)
 
     for keyword, handler in web_tool_keywords:
+        is_match = False
         try:
             if ' ' in keyword or "'" in keyword:
-                if keyword in user_lower:
-                    matched_keyword = keyword
-                    matched_handler = handler
-                    break
+                is_match = keyword in user_lower
             else:
                 pattern = r'\b' + re.escape(keyword) + r'\b'
-                if re.search(pattern, user_lower):
-                    matched_keyword = keyword
-                    matched_handler = handler
-                    break
+                is_match = bool(re.search(pattern, user_lower))
         except re.error:
-            if keyword in user_lower:
-                matched_keyword = keyword
-                matched_handler = handler
-                break
+            is_match = keyword in user_lower
 
-    if matched_handler:
-        if _handler_active.is_set():
-            return _call_groq_streaming(user_text)
-            
+        if not is_match:
+            continue
+
         _handler_active.set()
         try:
-            result = matched_handler(user_text)
-            if result:
-                print(f"[Zara] Handler success: {result[:80]}...")
+            result = handler(user_text)
+            if result is not None and str(result).strip():
+                print(f"[Zara] Handler success ({keyword}): {str(result)[:80]}...")
                 return result
+            # None/empty means "not my intent" — continue to lower-priority matches.
         except Exception as e:
-            print(f"[Zara] Handler error: {e}")
+            print(f"[Zara] Handler error ({keyword}): {e}")
+            # Fail fast on local handler errors instead of stalling on remote fallback.
+            return "I hit an internal action error. Try that command again, Sir."
         finally:
             _handler_active.clear()
 
@@ -480,6 +487,14 @@ def _generate_response_impl(user_text: str) -> str:
 
 def _call_groq_streaming(user_text: str) -> str:
     """Full streaming Groq implementation."""
+    # Before generating response, check if the task is complex
+    if len(user_text.split()) > 15 or "plan" in user_text.lower():
+        from agent_orchestrator import get_orchestrator
+        orch = get_orchestrator()
+        # Start a general-purpose team
+        workflow = orch.create_coding_team(user_text) # Generalist logic
+        return orch.execute_workflow(workflow)
+
     try:
         relevant_memories = memory_vault.retrieve_memory(user_text)
     except Exception:
@@ -504,9 +519,19 @@ def _call_groq_streaming(user_text: str) -> str:
         "max_tokens": 1024,
     }
 
-    resp = _post_groq(payload, stream=True)
-    if isinstance(resp, str):
-        return resp
+    try:
+        resp = _post_groq(payload, stream=True)
+        if isinstance(resp, str):
+            # Fallback to local router if Groq returns an error string
+            print(f"[Zara Core] Groq error: {resp}. Falling back to SmartRouter.")
+            from smart_router import get_router
+            response, _ = get_router().route(user_text, get_dynamic_system_prompt(), allow_cache=True)
+            return response
+    except Exception as e:
+        print(f"[Zara Core] Groq stream initiation failed: {e}. Falling back to SmartRouter.")
+        from smart_router import get_router
+        response, _ = get_router().route(user_text, get_dynamic_system_prompt(), allow_cache=True)
+        return response
 
     import json as _json
     import local_voice
@@ -549,55 +574,62 @@ def _call_groq_streaming(user_text: str) -> str:
             word_count = 0
 
     import re
-    for line in resp.iter_lines():
-        if not line:
-            continue
-        line_str = line.decode("utf-8")
-        if line_str.startswith("data: "):
-            line_str = line_str[6:]
-        if line_str.strip() == "[DONE]":
-            break
-        try:
-            chunk_data = _json.loads(line_str)
-            chunk = chunk_data.get("choices", [{}])[0].get("delta", {}).get("content", "")
-        except Exception:
-            continue
-        if not chunk:
-            continue
+    try:
+        for line in resp.iter_lines():
+            if not line:
+                continue
+            line_str = line.decode("utf-8")
+            if line_str.startswith("data: "):
+                line_str = line_str[6:]
+            if line_str.strip() == "[DONE]":
+                break
+            try:
+                chunk_data = _json.loads(line_str)
+                chunk = chunk_data.get("choices", [{}])[0].get("delta", {}).get("content", "")
+            except Exception:
+                continue
+            if not chunk:
+                continue
 
-        reply_accum += chunk
+            reply_accum += chunk
 
-        if "<EXECUTE>" in reply_accum and not in_execute_block:
-            in_execute_block = True
+            if "<EXECUTE>" in reply_accum and not in_execute_block:
+                in_execute_block = True
 
-        if in_execute_block:
-            action_block += chunk
-            if "</EXECUTE>" in action_block:
-                in_execute_block = False
-                match = _EXECUTE_PATTERN.search(reply_accum)
-                if match:
-                    json_payload = match.group(1).strip()
-                    if json_payload:
-                        try:
-                            _action_executor.execute_payload(json_payload)
-                        except Exception as e:
-                            print(f"[Zara Action Err]: {e}")
-            continue
+            if in_execute_block:
+                action_block += chunk
+                if "</EXECUTE>" in action_block:
+                    in_execute_block = False
+                    match = _EXECUTE_PATTERN.search(reply_accum)
+                    if match:
+                        json_payload = match.group(1).strip()
+                        if json_payload:
+                            try:
+                                _action_executor.execute_payload(json_payload)
+                            except Exception as e:
+                                print(f"[Zara Action Err]: {e}")
+                continue
 
-        visible_reply = _visible_reply_text(reply_accum)
+            visible_reply = _visible_reply_text(reply_accum)
 
-        if hasattr(main, "ui") and main.ui:
-            main.ui.set_subtitle_text(visible_reply)
+            if hasattr(main, "ui") and main.ui:
+                main.ui.set_subtitle_text(visible_reply)
 
-        if len(visible_reply) < visible_length:
+            if len(visible_reply) < visible_length:
+                visible_length = len(visible_reply)
+
+            visible_delta = visible_reply[visible_length:]
             visible_length = len(visible_reply)
 
-        visible_delta = visible_reply[visible_length:]
-        visible_length = len(visible_reply)
-
-        sentence_buffer += visible_delta
-        word_count = len(sentence_buffer.split())
-        _flush_buffer()
+            sentence_buffer += visible_delta
+            word_count = len(sentence_buffer.split())
+            _flush_buffer()
+    except Exception as e:
+        print(f"[Zara Core] Groq stream interrupted: {e}. Attempting failover synthesis.")
+        if not reply_accum.strip():
+            from smart_router import get_router
+            response, _ = get_router().route(user_text, get_dynamic_system_prompt(), allow_cache=True)
+            return response
 
     _flush_buffer(force=True)
 
@@ -623,17 +655,17 @@ def _handle_send_message(text: str) -> Optional[str]:
         import local_voice
         from messaging_agent import get_messaging_agent
         
-        agent = get_messaging_agent(speak_callback=local_voicespeak)
+        agent = get_messaging_agent(speak_callback=local_voice.speak)
         
-        if agenthas_pending_confirmation():
-            result = agenthandle_confirmation(text)
+        if agent.has_pending_confirmation():
+            result = agent.handle_confirmation(text)
             if result:
                 return result
         
-        request = agentparse_message_command(text)
+        request = agent.parse_message_command(text)
         if request:
-            agentinitiate_send(request)
-            return None
+            agent.initiate_send(request)
+            return "I drafted the message and queued confirmation, Sir."
         
     except Exception as e:
         print(f"[Messaging Handler] Error: {e}")
@@ -653,16 +685,23 @@ def _handle_play_music(text: str) -> Optional[str]:
         r'\bi want to hear\b', r'\bcan you play\b',
         r'\bsome\b(?=\s+music\b)', r'\bon spotify\b',
         r'\bon youtube\b', r'\bon apple music\b',
+        r'\bi want you to\b', r'\bopen spotify\b', r'\bopen\b',
+        r'\bme\b', r'\bany\b', r'\bsong\b',
     ]
     for pattern in command_patterns:
         query = re.sub(pattern, '', query, flags=re.IGNORECASE)
     query = re.sub(r'\s+', ' ', query).strip().strip(',').strip()
+    query = re.sub(r'^(here|please|zara|sir|ma[\'’]?am)\b[,\s]*', '', query, flags=re.IGNORECASE)
+    query = re.sub(r'^(and|then)\s+', '', query, flags=re.IGNORECASE)
+    query = re.sub(r'[.!?,;:]+$', '', query).strip()
 
     # Try to parse "Song by Artist"
     song_name = ""
     artist_name = ""
 
-    if " by " in query:
+    if query.lower().startswith("from "):
+        artist_name = query[5:].strip()
+    elif " by " in query:
         parts = query.split(" by ", 1)
         song_name = parts[0].strip()
         artist_name = parts[1].strip()
@@ -671,8 +710,19 @@ def _handle_play_music(text: str) -> Optional[str]:
         song_name = parts[0].strip()
         artist_name = parts[1].strip()
 
-    # Pattern 4: "some music" or "music"
-    if not query or query in ["music", "some music", "something"]:
+    if song_name.lower() in {"and", "any", "some", "a", "the"}:
+        song_name = ""
+
+    # Prefer artist query when user asks "song from X".
+    if artist_name and not song_name:
+        query = artist_name
+
+    # Pattern 4: generic requests ("some music", "any song", etc.)
+    generic_music_queries = {
+        "music", "some music", "something", "any music", "any song",
+        "song", "a song", "play something", "something nice", "and music"
+    }
+    if not query or query.lower() in generic_music_queries:
         # Play user's recent favorites or discover weekly
         query = ""  # Empty = play whatever's recommended
         print("[Zara] Playing recommended music")
@@ -692,6 +742,7 @@ def _handle_play_music(text: str) -> Optional[str]:
     print(f"[Zara] Final query: '{query}'")
 
     # ── REMEMBER FOR FUTURE ──────────────────────────────────
+    prefs = get_prefs()
     # Only log meaningful entries
     if song_name and len(song_name) > 2 and song_name not in ["music", "song", "some music"]:
         prefs.add_recent_song(song_name, artist_name)
@@ -1098,7 +1149,7 @@ web_tool_keywords = [
     ("play some", lambda txt: _handle_play_music(txt)),
     ("put on", lambda txt: _handle_play_music(txt)),
     ("listen to", lambda txt: _handle_play_music(txt)),
-    ("spotify", lambda txt: _handle_play_music(txt) if "play" in txt.lower() else None),
+    ("spotify", lambda txt: _handle_play_music(txt) if "play" in txt.lower() else _handle_open_app(txt)),
     
     # Contextual music guards
     ("play", lambda txt: _handle_play_music(txt) if any(w in txt.lower() for w in ["music", "song", "spotify", "artist", "album", "track", "by "]) else None),
@@ -1370,7 +1421,7 @@ def _generate_llm_response(user_text: str) -> str:
             from smart_router import get_router
             router = get_router()
             response, _ = router.route(
-                user_text, SYSTEM_PROMPT, allow_cache=True)
+                user_text, get_dynamic_system_prompt(), allow_cache=True)
             return response
         except:
             return "I'm having trouble connecting. Check your internet."

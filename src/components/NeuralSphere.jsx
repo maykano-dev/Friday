@@ -36,14 +36,18 @@ export default function NeuralSphere() {
   const stateRef  = useRef({
     angleX: 0, angleY: 0,
     currentRadius: BASE_RADIUS, targetRadius: BASE_RADIUS,
+    pulseOverclock: 1.0,
     nodeR: 0, nodeG: 80, nodeB: 255,
     lineR: 0, lineG: 40, lineB: 127,
     rafId: null,
   });
 
   const zaraState  = useZaraStore(s => s.zaraState);
+  const voiceAmp = useZaraStore(s => s.metrics?.voiceAmp || 0);
   const zaraStateRef = useRef(zaraState);
+  const voiceAmpRef = useRef(voiceAmp);
   useEffect(() => { zaraStateRef.current = zaraState; }, [zaraState]);
+  useEffect(() => { voiceAmpRef.current = voiceAmp; }, [voiceAmp]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -63,9 +67,14 @@ export default function NeuralSphere() {
       s.targetRadius = BASE_RADIUS + heartbeat * 30;
     } else if (state === 'TALKING') {
       const voicePulse = (Math.sin(now * 6) + 1) / 2 * 25;
-      s.targetRadius = BASE_RADIUS + voicePulse;
+      const visualAmp = Math.min((voiceAmpRef.current || 0) / 150, 80) + voicePulse;
+      s.targetRadius = BASE_RADIUS + visualAmp * s.pulseOverclock;
     } else {
       s.targetRadius = BASE_RADIUS + Math.sin(now * 1) * 5;
+    }
+
+    if (s.pulseOverclock > 1.0) {
+      s.pulseOverclock += (1.0 - s.pulseOverclock) * 0.1;
     }
 
     // ── Lerp color ────────────────────────────────────────────────────────────
@@ -140,10 +149,17 @@ export default function NeuralSphere() {
     ctx.fillStyle = `rgb(${nr},${ng},${nb})`;
     for (const [px, py, pz] of projected) {
       const size = Math.max(1, 3 + pz / 100);
+      
+      // ADD BLOOM EFFECT
+      ctx.shadowBlur = size * 2;
+      ctx.shadowColor = `rgba(${nr}, ${ng}, ${nb}, 0.5)`;
+      
       ctx.beginPath();
       ctx.arc(px, py, size, 0, Math.PI * 2);
       ctx.fill();
     }
+    // Reset shadow for performance
+    ctx.shadowBlur = 0;
 
     s.rafId = requestAnimationFrame(draw);
   }, []);
@@ -164,9 +180,10 @@ export default function NeuralSphere() {
 
   // ── Start / stop RAF ────────────────────────────────────────────────────────
   useEffect(() => {
-    stateRef.current.rafId = requestAnimationFrame(draw);
+    const s = stateRef.current;
+    s.rafId = requestAnimationFrame(draw);
     return () => {
-      if (stateRef.current.rafId) cancelAnimationFrame(stateRef.current.rafId);
+      if (s.rafId) cancelAnimationFrame(s.rafId);
     };
   }, [draw]);
 

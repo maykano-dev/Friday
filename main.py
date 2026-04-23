@@ -72,7 +72,7 @@ def _process_utterance(text: str, proactive) -> None:
         routed = _output_router.route(zara_reply)
         
         if routed.visual and ui:
-            ui.context_cards.append(ContextCard("TEXT", routed.visual))
+            ui.add_context_card(ContextCard("TEXT", routed.visual))
             
         if routed.action:
             try:
@@ -89,16 +89,33 @@ def _process_utterance(text: str, proactive) -> None:
             ws_bridge.add_message("zara", routed.spoken)
             local_voice.speak(routed.spoken)
 
-    # Wait for speech to finish before resetting UI (OUTSIDE THE LOCK)
-    deadline = time.time() + 30  # Safety timeout
-    while getattr(state.is_talking, 'value', False) and time.time() < deadline:
-        time.sleep(0.05)
-
+    # Allow visual state to reset so the sphere can react to the user instantly
     if ui:
         ui.set_subtitle_text("")
         ui.set_user_text("")
         ui.set_state("STANDBY")
     ws_bridge.set_state("STANDBY")
+
+
+def start_visual_memory():
+    """Takes periodic snapshots to build long-term visual recall."""
+    from zara_eyes import get_eyes
+    import memory_vault
+    import time
+
+    def _v_loop():
+        while True:
+            time.sleep(300) # Every 5 minutes
+            try:
+                eyes = get_eyes()
+                context = eyes.look_at() # Captures active window + description
+                if context:
+                    memory_vault.store_memory(f"Visual Recall: User was using {context.active_window}. Context: {context.raw_description}")
+            except Exception as e:
+                print(f"[Visual Memory] Error in snapshot: {e}")
+
+    import threading
+    threading.Thread(target=_v_loop, daemon=True).start()
 
 
 def run_Zara():
@@ -120,6 +137,7 @@ def run_Zara():
             "[System WARNING: 'keyboard' module not installed. Global Hotkey disabled.]")
 
     print("\n[System: Booting Zara Core...]")
+    start_visual_memory()
 
     # ── 1. Boot UI ──────────────────────────────────────────────────────
     ui = NeuralVisualizer()
@@ -127,6 +145,11 @@ def run_Zara():
 
     # ── 1.1 Start WebSocket bridge for React dashboard ──────────────────
     ws_bridge.start_bridge()
+
+    # ── 1.2 Orb stream source ─────────────────────────────────────────────
+    # The live pygame UI renderer now pushes orb frames directly to ws_bridge,
+    # guaranteeing dashboard parity with the on-screen neural core.
+    print("[System] Orb stream linked to live pygame renderer.")
 
     # Seed API health from env
     ws_bridge.set_api_health({
@@ -144,10 +167,10 @@ def run_Zara():
                 saved_cards = json.load(f)
             for c in saved_cards:
                 if c.get("card_type") == "WEB":
-                    ui.context_cards.append(WebResultCard(
+                    ui.add_context_card(WebResultCard(
                         c.get("url", ""), status="complete"))
                 else:
-                    ui.context_cards.append(ContextCard(
+                    ui.add_context_card(ContextCard(
                         c.get("card_type", "TEXT"), c.get("content", ""), label=c.get("label", "")))
             print("[System] Memory state resumed. Context Wing restored.")
         except Exception as e:
@@ -208,18 +231,55 @@ def run_Zara():
     except Exception as e:
         print(f"[Zara] Eyes failed to activate: {e}")
 
+
+def start_visual_memory():
+    """Autonomously snapshot and remember screen state every few minutes."""
+    from zara_eyes import get_eyes
+    import memory_vault
+    import time
+    import threading
+
+    def monitor():
+        print("[System] Visual Working Memory monitor active.")
+        while True:
+            time.sleep(300)  # Every 5 minutes
+            try:
+                eyes = get_eyes()
+                context = eyes.look_at()  # Captures current screen state
+                if context:
+                    # Log to memory vault for long-term recall
+                    memory_vault.store_memory(
+                        f"Visual Recall: User was using {context.active_window}. Insight: {context.raw_description[:100]}"
+                    )
+            except Exception as e:
+                print(f"[Visual Memory] Snapshot failed: {e}")
+
+    threading.Thread(target=monitor, daemon=True,
+                     name="ZaraVisualMemory").start()
+
     # ── 3. Boot background daemons ──────────────────────────────────────
     proactive = ProactiveEngine(ui=ui, interval_seconds=1800)
     proactive.start()
 
+    # Visual Working Memory (Every 5 mins)
+    start_visual_memory()
+
     # Smart Engagement Engine (Idle + File Scanning)
     def _proactive_callback(prompt):
-        import state
-        # Don't interrupt if busy
-        if getattr(state.is_talking, 'value', False):
-            return
-        if _utterance_lock.locked():
-            return
+        """Callback for Zara's autonomous thoughts."""
+        try:
+            from zara_eyes import get_eyes
+            eyes = get_eyes()
+            # Zara looks at the current screen state to give a better context
+            eyes.look_at() 
+            
+            # Send the insight to the dashboard
+            import ws_bridge
+            ws_bridge.set_live_transcript("Zara is observing active tasks...", live=False)
+        except Exception:
+            pass
+
+        # Generate the reply in a separate thread so engagement loop stays responsive
         threading.Thread(
             target=_process_utterance,
             args=(prompt, proactive),

@@ -38,6 +38,7 @@ DEEPGRAM_API_KEY = os.environ.get("DEEPGRAM_API_KEY", "")
 
 # Wake words stripped from the front of transcriptions
 wake_words = ["hey zara", "okay zara", "ok zara", "hi zara", "zara,"]
+_bg_detector_enabled = True
 
 # VAD Lazy Loader
 _vad_model = None
@@ -195,37 +196,36 @@ class ContinuousListener:
     def _should_interrupt(self, pcm: np.ndarray, confidence: float) -> bool:
         """Determine if we should interrupt Zara."""
         # Require HIGHER confidence when Zara is talking
-        if confidence < 0.75:  # ← Increased from 0.65
+        if confidence < 0.78:
             return False
 
         # Require MORE energy (voice is louder than background music)
         energy = np.sqrt(np.mean(pcm.astype(np.float32) ** 2))
-        if energy < 800:  # ← Increased from 400
+        if energy < 900:
             return False
 
-        fft = np.fft.rfft(pcm)
+        fft = np.fft.rfft(pcm.astype(np.float32))
         if len(fft) == 0:
             return False
 
         freqs = np.fft.rfftfreq(len(pcm), 1.0 / self.RATE)
-        fft_magnitude = np.abs(fft)
+        fft_magnitude = np.abs(fft) + 1e-10
         dominant_freq = freqs[np.argmax(fft_magnitude)]
 
-        # Check if the sound has harmonics (music has rich harmonics, voice is simpler)
-        # Calculate spectral flatness - voice is less flat than music
-        if len(fft_magnitude) > 10:
-            spectral_flatness = np.exp(np.mean(np.log(fft_magnitude + 1e-10))) / (
-                np.mean(fft_magnitude) + 1e-10)
+        if len(fft_magnitude) > 16:
+            spectral_flatness = np.exp(np.mean(np.log(fft_magnitude))) / np.mean(fft_magnitude)
+            spectral_centroid = float(np.sum(freqs * fft_magnitude) / np.sum(fft_magnitude))
+            voice_band = (freqs >= 85) & (freqs <= 3400)
+            voice_ratio = float(np.sum(fft_magnitude[voice_band]) / np.sum(fft_magnitude))
 
-            # Music tends to have higher spectral flatness (> 0.3)
-            # Voice is more peaked (lower flatness)
-            if spectral_flatness > 0.25:
+            # Music / TV usually has flatter spectrum, higher centroid, and lower voice-band dominance.
+            if spectral_flatness > 0.28 or spectral_centroid > 3000 or voice_ratio < 0.42:
                 print(
-                    f"[Ear] Detected music (flatness: {spectral_flatness:.2f}) - ignoring")
+                    f"[Ear] Non-voice audio ignored (flat={spectral_flatness:.2f}, centroid={spectral_centroid:.0f}, vr={voice_ratio:.2f})")
                 return False
 
         # Human voice range: 85-400 Hz
-        if 85 < dominant_freq < 400:
+        if 85 < dominant_freq < 420:
             now = time.time()
             if now - self._last_interrupt_time > self._interrupt_cooldown:
                 self._last_interrupt_time = now
@@ -260,6 +260,7 @@ class ContinuousListener:
 
         # After Zara finishes speaking, add a cooldown
         was_talking = False
+        noise_floor = 100.0
 
         while self._running:
             frames = []
@@ -285,6 +286,16 @@ class ContinuousListener:
                 confidence = vad(tensor, self.RATE).item()
 
                 is_zara_talking = getattr(state.is_talking, 'value', False)
+
+                # DYNAMIC NOISE TRACKING (only when silent)
+                if not is_zara_talking:
+                    current_noise = np.abs(pcm).mean()
+                    # Smoothly adapt noise floor (slowly decays or rises)
+                    noise_floor = (noise_floor * 0.99) + (current_noise * 0.01)
+                    
+                    # Adjust thresholds dynamically based on new noise floor
+                    self.VAD_THRESHOLD_NORMAL = max(0.72, min(0.88, 0.75 + (noise_floor / 10000)))
+                    self.VAD_THRESHOLD_TALKING = max(0.55, self.VAD_THRESHOLD_NORMAL - 0.12)
 
                 if is_zara_talking:
                     was_talking = True
@@ -326,6 +337,11 @@ class ContinuousListener:
                                 frames = list(circular_buffer)
                                 if self.ui:
                                     self.ui.set_state("LISTENING")
+                                try:
+                                    import ws_bridge
+                                    ws_bridge.set_state("LISTENING")
+                                except Exception:
+                                    pass
 
                             speech_duration += self.CHUNK / self.RATE
                             silence_duration = 0.0
@@ -342,6 +358,11 @@ class ContinuousListener:
 
             # Process captured speech
             if not frames or speech_duration < self.MIN_SPEECH_DURATION:
+                try:
+                    import ws_bridge
+                    ws_bridge.set_state("STANDBY")
+                except Exception:
+                    pass
                 continue
 
             # Check audio energy
@@ -350,6 +371,11 @@ class ContinuousListener:
             avg_energy = total_energy / len(frames)
             if avg_energy < 80:
                 print(f"[Ear] Low energy ({avg_energy:.0f}), discarding")
+                try:
+                    import ws_bridge
+                    ws_bridge.set_state("STANDBY")
+                except Exception:
+                    pass
                 continue
 
             # Transcribe
@@ -365,19 +391,27 @@ class ContinuousListener:
                 continue
 
             # Background speaker filter — discard if not directed at Zara
+            classification = "direct"
+            confidence = 1.0
             try:
                 from bg_speaker_detector import get_bg_detector, SpeakerContext
-                bg_det = get_bg_detector()
-                media_is_playing = getattr(state.media_playing, 'value', False)
-                classification, confidence = bg_det.classify_audio(
-                    frames,
-                    sample_rate=self.RATE,
-                    transcription=cleaned,
-                    media_playing=media_is_playing,
-                )
-                if classification == SpeakerContext.BACKGROUND and confidence > 0.75:
-                    print(f"[Ear] Background speech filtered (conf={confidence:.2f}): '{cleaned[:40]}'")
-                    continue
+                if _bg_detector_enabled:
+                    bg_det = get_bg_detector()
+                    media_is_playing = getattr(state.media_playing, 'value', False)
+                    classification, confidence = bg_det.classify_audio(
+                        frames,
+                        sample_rate=self.RATE,
+                        transcription=cleaned,
+                        media_playing=media_is_playing,
+                    )
+                    if classification in (SpeakerContext.BACKGROUND, SpeakerContext.AMBIENT) and confidence > 0.70:
+                        print(f"[Ear] Non-direct speech filtered ({classification}, conf={confidence:.2f}): '{cleaned[:40]}'")
+                        try:
+                            import ws_bridge
+                            ws_bridge.set_state("STANDBY")
+                        except Exception:
+                            pass
+                        continue
             except Exception as e:
                 print(f"[Ear] BG detector error (passing through): {e}")
 

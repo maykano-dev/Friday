@@ -157,6 +157,14 @@ class ZaraVision:
             return "I don't understand that vision mode, Sir."
         
         return self._query_vision(img, prompt)
+
+    def summarize_screen(self, screenshot_path: Optional[str] = None) -> str:
+        """Alias for see() or providing a summary of a specific screenshot file."""
+        if screenshot_path and os.path.exists(screenshot_path):
+            with open(screenshot_path, "rb") as f:
+                img_b64 = base64.b64encode(f.read()).decode("utf-8")
+            return self._query_vision(img_b64, "Summarize what is visible in this screenshot.")
+        return self.see(VisionMode.SCREEN)
     
     def read_text(self, mode: VisionMode = VisionMode.SCREEN) -> str:
         """Read all text visible on screen."""

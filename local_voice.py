@@ -16,6 +16,10 @@ import state
 from ctypes import cast, POINTER
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+try:
+    import numpy as np
+except Exception:
+    np = None
 
 # ── Edge-TTS ────────────────────────────────────────────────────────────────
 try:
@@ -287,6 +291,7 @@ def _player_worker() -> None:
     """Plays segments back-to-back with zero gap."""
     channels = [pygame.mixer.Channel(0), pygame.mixer.Channel(1)]
     current_ch = 0
+    mixer_sample_rate = 24000
 
     while True:
         try:
@@ -304,27 +309,58 @@ def _player_worker() -> None:
             try:
                 sound = pygame.mixer.Sound(audio_buf)
                 ch = channels[current_ch % 2]
+                pcm_mono = None
+                if np is not None:
+                    try:
+                        raw = sound.get_raw()
+                        if raw:
+                            pcm = np.frombuffer(raw, dtype=np.int16).astype(np.float32)
+                            if pcm.size > 0:
+                                # Mixer was initialized as stereo; average channels for a mono envelope.
+                                if pcm.size % 2 == 0:
+                                    pcm = pcm.reshape(-1, 2).mean(axis=1)
+                                pcm_mono = pcm
+                    except Exception:
+                        pcm_mono = None
 
                 # Wait for previous channel to finish
                 while ch.get_busy():
                     if _interrupted.is_set():
                         ch.stop()
                         break
-                    pygame.time.wait(10)
+                    pygame.time.wait(2) # Faster polling (was 10)
 
                 if not _interrupted.is_set():
+                    # Hard-clear channel before play to prevent overlap
+                    ch.stop()
                     ch.play(sound)
                     current_ch += 1
+                    play_start = time.time()
+                    env_window = max(128, mixer_sample_rate // 25)  # ~40ms envelope
 
                     # Wait for THIS sound to finish
                     while ch.get_busy():
                         if _interrupted.is_set():
                             ch.stop()
+                            state.current_volume.value = 0.0
                             break
+                        if pcm_mono is not None and pcm_mono.size > 0:
+                            # Follow playback time and expose an amplitude envelope for neural visuals.
+                            idx = int((time.time() - play_start) * mixer_sample_rate)
+                            lo = max(0, idx - env_window)
+                            hi = min(pcm_mono.size, idx + env_window)
+                            if hi > lo:
+                                amp = float(np.sqrt(np.mean(pcm_mono[lo:hi] ** 2)))
+                                state.current_volume.value = amp
+                        else:
+                            # Conservative fallback pulse when raw PCM isn't available.
+                            state.current_volume.value = 1200.0
                         pygame.time.wait(10)
+                    state.current_volume.value = 0.0
 
             except Exception as e:
                 print(f"[Zara TTS] playback error: {e}")
+                state.current_volume.value = 0.0
 
             _audio_queue.task_done()
             _sync_talking_state(channels)

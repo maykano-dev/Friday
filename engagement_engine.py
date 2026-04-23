@@ -19,6 +19,7 @@ import os
 import random
 import threading
 import time
+import json
 from typing import Callable, Iterable, List, Optional, Set, Tuple
 
 
@@ -117,6 +118,7 @@ class EngagementEngine:
             try:
                 self._check_idle()
                 self._check_context()
+                self._monitor_logistics()
             except Exception as e:
                 print(f"[Zara Engagement] check failed: {e}")
 
@@ -160,6 +162,26 @@ class EngagementEngine:
                     )
                     self._dispatch(prompt)
                     return  # at most one context alert per scan cycle
+
+    def _monitor_logistics(self) -> None:
+        """Proactively monitor shipment status every 30 mins."""
+        now = time.time()
+        # Initialize last_logistics_check if not exists
+        if not hasattr(self, "_last_logistics_check"):
+            self._last_logistics_check = 0.0
+            
+        if now - self._last_logistics_check >= 1800: # 30 mins
+            self._last_logistics_check = now
+            print("[Zara Engagement] Running proactive logistics monitor...")
+            try:
+                from action_engine import get_executor
+                # Trigger a web_scrape task
+                get_executor().execute_payload(json.dumps({
+                    "action": "web_scrape",
+                    "url": "https://c2glogistics.com/admin/tracking"
+                }))
+            except Exception as e:
+                print(f"[Zara Engagement] Logistics monitor failed: {e}")
 
     # ---- File-scan helpers -------------------------------------------------
 

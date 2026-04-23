@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import time
 import threading
+import re
 from collections import deque
 from typing import Optional
 import numpy as np
@@ -36,6 +37,7 @@ class BackgroundSpeakerDetector:
     Strategy:
     - Wake word present → DIRECT (high confidence)
     - Energy much higher than calibrated baseline → more likely DIRECT
+    - Broadband/flat spectrum during playback → AMBIENT (music/TV)
     - Multiple overlapping voice signatures → BACKGROUND
     - Lacks sentence structure or question form without name → ambiguous
     - Short utterances without wake word during media playback → BACKGROUND
@@ -105,6 +107,14 @@ class BackgroundSpeakerDetector:
                 if text_lower.startswith(wake) or f" {wake}" in text_lower:
                     return SpeakerContext.DIRECT, 0.99
 
+        # Rule 2: Ambient media signature (music/TV) detection.
+        # High spectral flatness and weak voice-band dominance generally indicate non-speech.
+        spectral_flatness = features.get("spectral_flatness", 0.0)
+        voice_ratio = features.get("voice_band_ratio", 1.0)
+        centroid = features.get("spectral_centroid", self.baseline_spectral_centroid)
+        if (spectral_flatness > 0.30 and voice_ratio < 0.45) or (media_playing and spectral_flatness > 0.26 and centroid > 2600):
+            return SpeakerContext.AMBIENT, 0.88
+
         # Rule 2: Media playing + no wake word → likely BACKGROUND
         if media_playing and transcription:
             text_lower = transcription.lower()
@@ -128,7 +138,6 @@ class BackgroundSpeakerDetector:
 
         # Rule 4: Text analysis
         if transcription:
-            import re
             text_lower = transcription.lower()
 
             # Check for direct address patterns
@@ -196,6 +205,15 @@ class BackgroundSpeakerDetector:
                 if fft_mag.sum() > 0:
                     features["spectral_centroid"] = float(
                         np.sum(freqs * fft_mag) / np.sum(fft_mag)
+                    )
+                    # Spectral flatness: higher for noise/music beds, lower for voiced speech.
+                    fft_safe = fft_mag + 1e-10
+                    features["spectral_flatness"] = float(
+                        np.exp(np.mean(np.log(fft_safe))) / np.mean(fft_safe)
+                    )
+                    voice_band = (freqs >= 85) & (freqs <= 3400)
+                    features["voice_band_ratio"] = float(
+                        np.sum(fft_mag[voice_band]) / np.sum(fft_mag)
                     )
 
             # Zero crossing rate (roughness proxy)

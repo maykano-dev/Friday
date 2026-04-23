@@ -49,7 +49,7 @@ export default function TitleBar() {
           transition: 'background 0.4s, box-shadow 0.4s',
           animation: 'pulseDot 2.2s ease-in-out infinite',
         }} />
-        ZARA
+        ZARA // NEURAL ORCHESTRATION
       </div>
 
       {/* State chip */}

@@ -93,6 +93,19 @@ class ZaraWindowManager:
             self.win32gui.EnumWindows(callback, windows)
         
         return windows
+
+    def get_active_windows(self) -> List[Dict]:
+        """Get all visible windows as a list of dictionaries for broadcasting."""
+        windows = self.get_all_windows()
+        return [
+            {
+                "title": w.title,
+                "hwnd": w.hwnd,
+                "process": w.process_name,
+                "minimized": w.is_minimized,
+                "maximized": w.is_maximized
+            } for w in windows
+        ]
     
     def find_window(self, title_contains: str = None, process_contains: str = None) -> Optional[WindowInfo]:
         """Find a window by title or process name."""

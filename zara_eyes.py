@@ -295,12 +295,87 @@ class ZaraEyes:
             return self.current_context.active_window
         return "Unknown"
 
+    def capture_visual_memory(self):
+        """Takes a snapshot and stores a semantic description in the vault."""
+        try:
+            from zara_vision import get_vision
+            vision = get_vision()
+            screenshot_path = "last_screenshot.png"
+            
+            # Capture the screen
+            screenshot = pyautogui.screenshot()
+            screenshot.save(screenshot_path)
+            
+            # Get a text description of the screen
+            description = vision.summarize_screen(screenshot_path)
+            
+            # Store in long-term memory
+            import memory_vault
+            memory_vault.index_data(f"Visual Context: {description}", "visual_memory")
+            print(f"[Zara Eyes] Visual memory indexed: {description[:50]}...")
+        except Exception as e:
+            print(f"[Zara Eyes] Failed to capture visual memory: {e}")
+
+
+class ActionLogger:
+    """Records user actions (clicks, keys) to synthesize macros."""
+    def __init__(self):
+        self.logs = []
+        self._recording = False
+        self._thread = None
+        self.start_time = 0
+
+    def start(self):
+        if self._recording: return
+        self._recording = True
+        self.logs = []
+        self.start_time = time.time()
+        self._thread = threading.Thread(target=self._poll_actions, daemon=True)
+        self._thread.start()
+        print("[Zara Eyes] Workflow recording started.")
+
+    def stop(self):
+        self._recording = False
+        print(f"[Zara Eyes] Workflow recording stopped. Captured {len(self.logs)} events.")
+        return self.logs
+
+    def _poll_actions(self):
+        import win32api
+        import win32gui
+        last_state = False
+        
+        while self._recording:
+            # Check left mouse button
+            state = win32api.GetKeyState(0x01)
+            if state < 0 and not last_state: # Button pressed
+                x, y = pyautogui.position()
+                window = win32gui.GetWindowText(win32gui.GetForegroundWindow())
+                self.logs.append({
+                    "time": round(time.time() - self.start_time, 2),
+                    "action": "click",
+                    "x": x, "y": y,
+                    "window": window
+                })
+                print(f"[Record] Click at {x}, {y} in {window}")
+                last_state = True
+            elif state >= 0:
+                last_state = False
+            
+            time.sleep(0.05)
+
 
 # Global singleton
 _zara_eyes: Optional[ZaraEyes] = None
+_action_logger: Optional[ActionLogger] = None
 
 def get_eyes() -> ZaraEyes:
     global _zara_eyes
     if _zara_eyes is None:
         _zara_eyes = ZaraEyes()
     return _zara_eyes
+
+def get_action_logger() -> ActionLogger:
+    global _action_logger
+    if _action_logger is None:
+        _action_logger = ActionLogger()
+    return _action_logger

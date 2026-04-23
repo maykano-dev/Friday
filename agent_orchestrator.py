@@ -22,6 +22,8 @@ class AgentRole(Enum):
     SUMMARIZER = "summarizer"     # Condenses information
     PLANNER = "planner"           # Breaks down complex tasks
     EXECUTOR = "executor"         # Performs system actions
+    SCHOLAR = "scholar"           # Specialist in indexing large document sets
+    LOGISTICS = "logistics"       # Logistics and supply chain specialist
 
 
 @dataclass
@@ -84,6 +86,12 @@ class AgentOrchestrator:
     def _execute_agent_task(self, task: AgentTask) -> None:
         """Execute a single agent task using the appropriate role prompt."""
         task.status = "running"
+        
+        try:
+            import ws_bridge
+            ws_bridge.broadcast_agent_task(task.id, task.role.value, task.instruction, task.status)
+        except Exception:
+            pass
 
         role_prompts = {
             AgentRole.RESEARCHER: (
@@ -111,6 +119,16 @@ class AgentOrchestrator:
                 "You are an execution agent. Generate the exact system command "
                 "or action payload needed to accomplish the task."
             ),
+            AgentRole.SCHOLAR: (
+                "You are a specialized Knowledge Agent. Your task is to extract "
+                "semantic insights from raw document text and create concise "
+                "summaries for long-term indexing. Ignore fluff; focus on technical data."
+            ),
+            AgentRole.LOGISTICS: (
+                "You are the C2G Logistics Manager. Your job is to track shipment IDs, "
+                "compare shipping rates between China and Ghana, and monitor price "
+                "fluctuations on Alibaba and 1688. Be extremely precise with numbers."
+            ),
         }
 
         system_prompt = role_prompts.get(
@@ -124,10 +142,22 @@ class AgentOrchestrator:
             task.status = "completed"
             print(
                 f"[Orchestrator] Agent {task.role.value} completed task {task.id}")
+            
+            try:
+                import ws_bridge
+                ws_bridge.broadcast_agent_task(task.id, task.role.value, task.instruction, task.status, result)
+            except Exception:
+                pass
         except Exception as e:
             task.result = f"Error: {e}"
             task.status = "failed"
             print(f"[Orchestrator] Agent {task.role.value} failed: {e}")
+            
+            try:
+                import ws_bridge
+                ws_bridge.broadcast_agent_task(task.id, task.role.value, task.instruction, task.status, task.result)
+            except Exception:
+                pass
 
         self.completed_tasks.append(task)
 

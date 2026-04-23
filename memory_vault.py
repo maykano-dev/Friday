@@ -24,6 +24,7 @@ MAX_MEMORIES = 10000
 
 # Force-alias at the top to prevent import race conditions
 def add_memory(text: str): return store_memory(text)
+def save_memory(text: str): return store_memory(text)
 
 
 def _get_chroma_collection():
@@ -317,6 +318,29 @@ def get_recent_memories(limit: int = 10) -> List[str]:
         return []
 
 
+def get_memory_count() -> int:
+    """Return total number of stored SQLite memories."""
+    try:
+        with _connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS c FROM memories").fetchone()
+            return int(row["c"]) if row else 0
+    except sqlite3.Error as e:
+        print(f"[Zara Vault] get_memory_count failed: {e}")
+        return 0
+
+
+def get_semantic_count() -> int:
+    """Return total number of semantic (ChromaDB) entries."""
+    try:
+        col = _get_chroma_collection()
+        if not col:
+            return 0
+        return int(col.count())
+    except Exception as e:
+        print(f"[Zara Vault] get_semantic_count failed: {e}")
+        return 0
+
+
 def retrieve_memory(user_query: str) -> List[str]:
     """Return up to TOP_RESULTS memory_text strings most relevant to `user_query`.
 
@@ -351,7 +375,8 @@ def retrieve_memory(user_query: str) -> List[str]:
         f"LIMIT ?"
     )
     
-    # Combined parameters in exact order of appearance in SQL
+    # Combined parameters in exact order of appearance in SQL: SELECT (score_terms) ... WHERE (where_terms) ... LIMIT ?
+    # This prevents misalignment and maintains SQL integrity.
     final_params = params + where_params + [TOP_RESULTS]
 
     try:
@@ -459,6 +484,80 @@ def get_latest_context_insight() -> Optional[str]:
     except sqlite3.Error as e:
         print(f"[Zara Vault] get_latest_context_insight failed: {e}")
         return None
+
+
+def _extract_text(file_path: str) -> str:
+    """Extract text from PDF, TXT, or MD files."""
+    ext = os.path.splitext(file_path)[1].lower()
+    try:
+        if ext == '.pdf':
+            import PyPDF2
+            text = ""
+            with open(file_path, "rb") as f:
+                reader = PyPDF2.PdfReader(f)
+                for page in reader.pages:
+                    text += page.extract_text() + "\n"
+            return text
+        elif ext in ['.txt', '.md']:
+            with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+                return f.read()
+    except Exception as e:
+        print(f"[Memory Vault] Failed to extract text from {file_path}: {e}")
+    return ""
+
+
+def ingest_directory(path: str) -> None:
+    """Recursively reads technical docs and indexes them via the Scholar agent."""
+    if not os.path.exists(path):
+        print(f"[Memory Vault] Ingestion path does not exist: {path}")
+        return
+
+    import agent_orchestrator
+    import zara_core
+    
+    # Get the orchestrator (it needs the LLM callback)
+    orchestrator = agent_orchestrator.get_orchestrator(llm_callback=zara_core.generate_response)
+    if not orchestrator:
+        print("[Memory Vault] Scholar agent unavailable.")
+        return
+
+    print(f"[Memory Vault] Starting deep ingestion: {path}")
+    
+    for root, _, files in os.walk(path):
+        for f in files:
+            if f.lower().endswith(('.pdf', '.txt', '.md')):
+                file_path = os.path.join(root, f)
+                content = _extract_text(file_path)
+                
+                if len(content.strip()) < 50:
+                    continue
+                
+                # Split content into chunks if it's very large (e.g. > 4000 chars)
+                chunks = [content[i:i+4000] for i in range(0, len(content), 4000)]
+                
+                for i, chunk in enumerate(chunks):
+                    # Use the Scholar agent to synthesize insights
+                    task = agent_orchestrator.AgentTask(
+                        id=f"scholar_{int(time.time())}_{i}",
+                        role=agent_orchestrator.AgentRole.SCHOLAR,
+                        instruction=f"Analyze this document fragment from '{f}' and extract key technical insights for long-term indexing.",
+                        context=chunk
+                    )
+                    
+                    # Run it (this is sync in this loop, but we could make it async)
+                    orchestrator.start()
+                    insight = orchestrator.execute_workflow(
+                        agent_orchestrator.Workflow(
+                            name="Scholar Insight",
+                            description=f"Indexing {f}",
+                            tasks=[task]
+                        )
+                    )
+                    
+                    if insight:
+                        index_data(insight, "scholarly_insight")
+    
+    print(f"[Memory Vault] Ingestion complete for {path}")
 
 
 # Ensure the DB + table exist as soon as the module is imported, so callers
