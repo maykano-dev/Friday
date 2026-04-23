@@ -405,7 +405,7 @@ class ActionExecutor:
             memory_vault.log_coding_task(code, "Failed")
             prompt = (
                 f"Code execution failed. Error: {error_msg}. Analyze the stack trace, identify the logic error, and provide a corrected <EXECUTE> block. "
-                f"IMPORTANT: You must include '"attempt": {attempt + 1}' inside your JSON payload."
+                f'IMPORTANT: You must include "attempt": {attempt + 1} inside your JSON payload.'
             )
             if main.ui:
                 main.ui.set_bg_task("")
@@ -602,7 +602,10 @@ class ActionExecutor:
         def _research_thread():
             try:
                 from playwright.sync_api import sync_playwright
-                from playwright_stealth import stealth_sync
+                try:
+                    from playwright_stealth import stealth_sync
+                except ImportError:
+                    from playwright_stealth import stealth as stealth_sync
                 import json
                 import zara_core
                 import re
@@ -1264,3 +1267,13 @@ Return purely valid JSON without markdown tags."""
         if "url" in ws:
             import webbrowser
             webbrowser.open(ws["url"])
+
+
+_executor_instance = None
+
+
+def get_executor():
+    global _executor_instance
+    if _executor_instance is None:
+        _executor_instance = ActionExecutor()
+    return _executor_instance

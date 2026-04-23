@@ -55,16 +55,18 @@ def _get_vad():
     return _vad_model
 
 
-def _get_mic_index(pa: pyaudio.PyAudio) -> int | None:
+def _get_mic_index(pa: pyaudio.PyAudio) -> int:
+    # Print all devices to your console so you can see the ID
+    print("[Ear] Scanning for audio hardware...")
     for i in range(pa.get_device_count()):
         info = pa.get_device_info_by_index(i)
+        print(f"  ID {i}: {info['name']}")
+        # Look for common hardware keywords
         if info['maxInputChannels'] > 0:
             name = info.get('name', '')
-            if any(skip in name for skip in ("Stereo Mix", "Virtual", "ManyCam")):
-                continue
-            if any(hw in name for hw in ("Array", "Realtek", "Built-in", "Microphone")):
+            if any(hw in name for hw in ["Realtek", "Microphone", "USB Audio"]):
                 return i
-    return 0  # Default to first available
+    return pa.get_default_input_device_info()['index']
 
 
 class ContinuousListener:
@@ -260,7 +262,8 @@ class ContinuousListener:
 
         # After Zara finishes speaking, add a cooldown
         was_talking = False
-        noise_floor = 100.0
+        # Add dynamic noise tracker
+        self.noise_floor = 100.0
 
         while self._running:
             frames = []
@@ -290,11 +293,10 @@ class ContinuousListener:
                 # DYNAMIC NOISE TRACKING (only when silent)
                 if not is_zara_talking:
                     current_noise = np.abs(pcm).mean()
-                    # Smoothly adapt noise floor (slowly decays or rises)
-                    noise_floor = (noise_floor * 0.99) + (current_noise * 0.01)
+                    self.noise_floor = (self.noise_floor * 0.99) + (current_noise * 0.01)
                     
-                    # Adjust thresholds dynamically based on new noise floor
-                    self.VAD_THRESHOLD_NORMAL = max(0.72, min(0.88, 0.75 + (noise_floor / 10000)))
+                    # Recalibrate sensitivity every tick
+                    self.VAD_THRESHOLD_NORMAL = max(0.72, min(0.88, 0.75 + (self.noise_floor / 10000)))
                     self.VAD_THRESHOLD_TALKING = max(0.55, self.VAD_THRESHOLD_NORMAL - 0.12)
 
                 if is_zara_talking:

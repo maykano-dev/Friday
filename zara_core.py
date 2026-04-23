@@ -45,18 +45,16 @@ MAX_MESSAGES = MAX_TURNS * 2
 
 def get_dynamic_system_prompt() -> str:
     import json
-    # Load persistent honorific from file
-    honorific = "Sir" 
+    honorific = "Sir"
     if os.path.exists("zara_prefs.json"):
         try:
             with open("zara_prefs.json", "r") as f:
                 honorific = json.load(f).get("honorific", "Sir")
         except: pass
-
+    
     return (
-        f"You are Zara, the ultimate autonomous assistant. Address the user as '{honorific}'. "
-        "You are sharp, efficient, and manage multiple complex tasks simultaneously. "
-        "You have full system access and never offer excuses — only solutions."
+        f"You are Zara, the ultimate AI assistant. Address the user as '{honorific}'. "
+        "Keep responses CONCISE (1-3 sentences). Focus on speed and system mastery."
     )
 
 
@@ -1317,23 +1315,13 @@ def _handle_search(query: str) -> Optional[str]:
     """Clean search query and research."""
     try:
         # Aggressive cleaning
-        command_words = [
-            "search", "find", "look up", "google", "for me",
-            "tell me about", "what is", "who is", "information on",
-            "search for", "google for", "look for", "can you",
-            "could you", "please", "i need", "i want"
-        ]
-
+        command_phrases = ["search for", "find info on", "tell me about", "google", "look up", "search", "find", "who is", "what is"]
         cleaned = query.lower()
-        for word in command_words:
-            cleaned = cleaned.replace(word, "")
-
-        # Remove common phrases
-        phrases = ["and tell me about it", "and tell me", "for me", "about it"]
-        for phrase in phrases:
-            cleaned = cleaned.replace(phrase, "")
-
-        # Clean punctuation and extra spaces
+        for phrase in command_phrases:
+            if cleaned.startswith(phrase):
+                cleaned = cleaned[len(phrase):].strip()
+        
+        # Clean extra spaces/punctuation only if needed
         import re
         cleaned = re.sub(r'[^\w\s]', ' ', cleaned)
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()

@@ -89,7 +89,7 @@ def _process_utterance(text: str, proactive) -> None:
             ws_bridge.add_message("zara", routed.spoken)
             local_voice.speak(routed.spoken)
 
-    # Allow visual state to reset so the sphere can react to the user instantly
+    # Reset UI state immediately so the sphere can react to your next word
     if ui:
         ui.set_subtitle_text("")
         ui.set_user_text("")
@@ -98,24 +98,28 @@ def _process_utterance(text: str, proactive) -> None:
 
 
 def start_visual_memory():
-    """Takes periodic snapshots to build long-term visual recall."""
+    """Autonomously snapshot and remember screen state every few minutes."""
     from zara_eyes import get_eyes
     import memory_vault
     import time
+    import threading
 
-    def _v_loop():
+    def monitor():
+        print("[System] Visual Working Memory monitor active.")
         while True:
-            time.sleep(300) # Every 5 minutes
+            time.sleep(300)  # Every 5 minutes
             try:
                 eyes = get_eyes()
-                context = eyes.look_at() # Captures active window + description
+                context = eyes.look_at()  # Captures current screen state
                 if context:
-                    memory_vault.store_memory(f"Visual Recall: User was using {context.active_window}. Context: {context.raw_description}")
+                    # Log to memory vault for long-term recall
+                    memory_vault.store_memory(
+                        f"Visual Recall: User was using {context.active_window}. Insight: {context.raw_description[:100]}"
+                    )
             except Exception as e:
-                print(f"[Visual Memory] Error in snapshot: {e}")
+                print(f"[Visual Memory] Snapshot failed: {e}")
 
-    import threading
-    threading.Thread(target=_v_loop, daemon=True).start()
+    threading.Thread(target=monitor, daemon=True, name="ZaraVisualMemory").start()
 
 
 def run_Zara():
@@ -146,11 +150,6 @@ def run_Zara():
     # ── 1.1 Start WebSocket bridge for React dashboard ──────────────────
     ws_bridge.start_bridge()
 
-    # ── 1.2 Orb stream source ─────────────────────────────────────────────
-    # The live pygame UI renderer now pushes orb frames directly to ws_bridge,
-    # guaranteeing dashboard parity with the on-screen neural core.
-    print("[System] Orb stream linked to live pygame renderer.")
-
     # Seed API health from env
     ws_bridge.set_api_health({
         "groq":       "online" if os.getenv("GROQ_API_KEY") else "offline",
@@ -161,7 +160,6 @@ def run_Zara():
 
     # ── CHECK FOR RESUME STATE ───────────────────────────────────────
     if os.path.exists("resume_state.json"):
-
         try:
             with open("resume_state.json", "r", encoding="utf-8") as f:
                 saved_cards = json.load(f)
@@ -218,68 +216,28 @@ def run_Zara():
         def on_error(error_context):
             error_msg = error_context.error_message
             print(f"[Zara] Proactively detected error: {error_msg}")
-
-            # Zara speaks up when she sees an error!
-            # Shortened message for better UX
-            local_voice.speak(
-                f"Sir, I noticed an error on your screen. Would you like me to help?")
+            local_voice.speak(f"Sir, I noticed an error on your screen. Would you like me to help?")
 
         eyes.on_error_detected = on_error
-
-        # eyes.start()
         print("[Zara] Eyes ready for on-demand use")
     except Exception as e:
         print(f"[Zara] Eyes failed to activate: {e}")
 
-
-def start_visual_memory():
-    """Autonomously snapshot and remember screen state every few minutes."""
-    from zara_eyes import get_eyes
-    import memory_vault
-    import time
-    import threading
-
-    def monitor():
-        print("[System] Visual Working Memory monitor active.")
-        while True:
-            time.sleep(300)  # Every 5 minutes
-            try:
-                eyes = get_eyes()
-                context = eyes.look_at()  # Captures current screen state
-                if context:
-                    # Log to memory vault for long-term recall
-                    memory_vault.store_memory(
-                        f"Visual Recall: User was using {context.active_window}. Insight: {context.raw_description[:100]}"
-                    )
-            except Exception as e:
-                print(f"[Visual Memory] Snapshot failed: {e}")
-
-    threading.Thread(target=monitor, daemon=True,
-                     name="ZaraVisualMemory").start()
-
     # ── 3. Boot background daemons ──────────────────────────────────────
     proactive = ProactiveEngine(ui=ui, interval_seconds=1800)
     proactive.start()
-
-    # Visual Working Memory (Every 5 mins)
-    start_visual_memory()
 
     # Smart Engagement Engine (Idle + File Scanning)
     def _proactive_callback(prompt):
         """Callback for Zara's autonomous thoughts."""
         try:
             from zara_eyes import get_eyes
-            eyes = get_eyes()
-            # Zara looks at the current screen state to give a better context
-            eyes.look_at() 
-            
-            # Send the insight to the dashboard
+            get_eyes().look_at() 
             import ws_bridge
             ws_bridge.set_live_transcript("Zara is observing active tasks...", live=False)
         except Exception:
             pass
 
-        # Generate the reply in a separate thread so engagement loop stays responsive
         threading.Thread(
             target=_process_utterance,
             args=(prompt, proactive),
@@ -300,19 +258,15 @@ def start_visual_memory():
     # ── 3.5. Start Wake Word Engine ─────────────────────────────────────
     try:
         from wake_word_engine import WakeWordEngine
-        import pygame
-        
         def wake_callback():
             local_voice.interrupt()
             if ui:
                 ui.set_state("LISTENING")
             try:
-                # Play an acknowledgment chime if it exists
                 if os.path.exists("assets/chime.wav"):
                     pygame.mixer.Sound("assets/chime.wav").play()
             except:
                 pass
-                
         wake_engine = WakeWordEngine(callback=wake_callback)
         wake_engine.start()
         print("[System] Wake Word Engine online.")
@@ -320,14 +274,12 @@ def start_visual_memory():
         print(f"[System] Wake Word Engine failed to start: {e}")
 
     # ── 4. Start the Continuous Listener (daemon) ───────────────────────
-    # Pass the UI object to the listener here
     listener = local_ears.get_listener(ui=ui)
     listener.start()
 
     # ── 5. Main event loop — lightweight poll ───────────────────────────
     try:
         while True:
-            # Check if the listener has a new transcription
             try:
                 user_text = listener.result_queue.get_nowait()
                 print(f"[Main] DEBUG: Got text from queue: '{user_text}'")
@@ -342,12 +294,10 @@ def start_visual_memory():
                     daemon=True,
                 ).start()
 
-            # Give the CPU a tiny break — prevents 98% usage
             time.sleep(0.01)
 
     except KeyboardInterrupt:
         print("\n[System: Shutting down Zara...]")
-
         try:
             state_data = [card.to_dict() for card in ui.context_cards]
             with open("resume_state.json", "w", encoding="utf-8") as f:
@@ -360,13 +310,11 @@ def start_visual_memory():
         if learning:
             learning.stop()
         proactive.stop()
-        
         try:
             from zara_eyes import get_eyes
             get_eyes().stop()
         except:
             pass
-            
         ui.stop()
 
 

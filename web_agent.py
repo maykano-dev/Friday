@@ -26,7 +26,10 @@ from typing import Optional, Dict, List, Any
 from urllib.parse import urljoin, quote_plus
 
 from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext, Response
-from playwright_stealth import stealth_sync
+try:
+    from playwright_stealth import stealth_sync
+except ImportError:
+    from playwright_stealth import stealth as stealth_sync
 
 
 class BrowsingMode(Enum):

@@ -13,7 +13,7 @@ export default function WindowMatrix() {
     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: '8px', padding: '12px' }}>
       {openWindows.map((win, i) => (
         <motion.div
-          key={win + i}
+          key={win.hwnd || i}
           whileHover={{ scale: 1.02, borderColor: 'var(--cyan)' }}
           style={{
             background: 'var(--surface)', border: '1px solid var(--border)',
@@ -23,11 +23,11 @@ export default function WindowMatrix() {
         >
           <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px' }}>
             <Monitor size={12} color="var(--text3)" />
-            <button onClick={() => handleFocus(win)} style={{ background: 'none', border: 'none', cursor: 'pointer' }}>
+            <button onClick={() => handleFocus(win.title)} style={{ background: 'none', border: 'none', cursor: 'pointer' }}>
               <Maximize2 size={12} color="var(--cyan)" />
             </button>
           </div>
-          <div style={{ fontSize: '11px', fontWeight: '600', color: 'var(--text)', lineHeight: '1.4' }}>{win}</div>
+          <div style={{ fontSize: '11px', fontWeight: '600', color: 'white', lineHeight: '1.4' }}>{win.title}</div>
           <motion.div 
             animate={{ top: ['-10%', '110%'] }} transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
             style={{ position: 'absolute', left: 0, right: 0, height: '1px', background: 'var(--cyan)', opacity: 0.3 }}
